@@ -192,7 +192,7 @@ class ChatService {
       // 转换为 ChatSession（先加载缓存，但不等待数据库查询）
       const sessions: ChatSession[] = []
       const now = Date.now()
-      
+
       for (const row of rows) {
         const username =
           row.username ||
@@ -261,10 +261,10 @@ class ChatService {
   /**
    * 异步补充会话列表的联系人信息（公开方法，供前端调用）
    */
-  async enrichSessionsContactInfo(usernames: string[]): Promise<{ 
+  async enrichSessionsContactInfo(usernames: string[]): Promise<{
     success: boolean
     contacts?: Record<string, { displayName?: string; avatarUrl?: string }>
-    error?: string 
+    error?: string
   }> {
     try {
       if (usernames.length === 0) {
@@ -303,9 +303,9 @@ class ChatService {
         for (const username of missing) {
           const displayName = displayNames.success && displayNames.map ? displayNames.map[username] : undefined
           const avatarUrl = avatarUrls.success && avatarUrls.map ? avatarUrls.map[username] : undefined
-          
+
           result[username] = { displayName, avatarUrl }
-          
+
           // 更新缓存
           this.avatarCache.set(username, {
             displayName: displayName || username,
@@ -772,7 +772,7 @@ class ChatService {
       case 49:
         return this.parseType49(content)
       case 50:
-        return '[通话]'
+        return this.parseVoipMessage(content)
       case 10000:
         return this.cleanSystemMessage(content)
       case 244813135921:
@@ -895,6 +895,67 @@ class ChatService {
       }
     } catch {
       return {}
+    }
+  }
+
+  /**
+   * 解析通话消息
+   * 格式: <voipmsg type="VoIPBubbleMsg"><VoIPBubbleMsg><msg><![CDATA[...]]></msg><room_type>0/1</room_type>...</VoIPBubbleMsg></voipmsg>
+   * room_type: 0 = 语音通话, 1 = 视频通话
+   * msg 状态: 通话时长 XX:XX, 对方无应答, 已取消, 已在其它设备接听, 对方已拒绝 等
+   */
+  private parseVoipMessage(content: string): string {
+    try {
+      if (!content) return '[通话]'
+
+      // 提取 msg 内容（中文通话状态）
+      const msgMatch = /<msg><!\[CDATA\[(.*?)\]\]><\/msg>/i.exec(content)
+      const msg = msgMatch?.[1]?.trim() || ''
+
+      // 提取 room_type（0=视频，1=语音）
+      const roomTypeMatch = /<room_type>(\d+)<\/room_type>/i.exec(content)
+      const roomType = roomTypeMatch ? parseInt(roomTypeMatch[1], 10) : -1
+
+      // 构建通话类型标签
+      let callType: string
+      if (roomType === 0) {
+        callType = '视频通话'
+      } else if (roomType === 1) {
+        callType = '语音通话'
+      } else {
+        callType = '通话'
+      }
+
+      // 解析通话状态
+      if (msg.includes('通话时长')) {
+        // 已接听的通话，提取时长
+        const durationMatch = /通话时长\s*(\d{1,2}:\d{2}(?::\d{2})?)/i.exec(msg)
+        const duration = durationMatch?.[1] || ''
+        if (duration) {
+          return `[${callType}] ${duration}`
+        }
+        return `[${callType}] 已接听`
+      } else if (msg.includes('对方无应答')) {
+        return `[${callType}] 对方无应答`
+      } else if (msg.includes('已取消')) {
+        return `[${callType}] 已取消`
+      } else if (msg.includes('已在其它设备接听') || msg.includes('已在其他设备接听')) {
+        return `[${callType}] 已在其他设备接听`
+      } else if (msg.includes('对方已拒绝') || msg.includes('已拒绝')) {
+        return `[${callType}] 对方已拒绝`
+      } else if (msg.includes('忙线未接听') || msg.includes('忙线')) {
+        return `[${callType}] 忙线未接听`
+      } else if (msg.includes('未接听')) {
+        return `[${callType}] 未接听`
+      } else if (msg) {
+        // 其他状态直接使用 msg 内容
+        return `[${callType}] ${msg}`
+      }
+
+      return `[${callType}]`
+    } catch (e) {
+      console.error('[ChatService] Failed to parse VOIP message:', e)
+      return '[通话]'
     }
   }
 

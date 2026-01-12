@@ -232,7 +232,7 @@ class ExportService {
         const title = this.extractXmlValue(content, 'title')
         return title || '[链接]'
       }
-      case 50: return '[通话]'
+      case 50: return this.parseVoipMessage(content)
       case 10000: return this.cleanSystemMessage(content)
       default:
         if (content.includes('<type>57</type>')) {
@@ -262,6 +262,64 @@ class ExportService {
       .replace(/<\/?[a-zA-Z0-9_]+[^>]*>/g, '')
       .replace(/\s+/g, ' ')
       .trim() || '[系统消息]'
+  }
+
+  /**
+   * 解析通话消息
+   * 格式: <voipmsg type="VoIPBubbleMsg"><VoIPBubbleMsg><msg><![CDATA[...]]></msg><room_type>0/1</room_type>...</VoIPBubbleMsg></voipmsg>
+   * room_type: 0 = 语音通话, 1 = 视频通话
+   */
+  private parseVoipMessage(content: string): string {
+    try {
+      if (!content) return '[通话]'
+
+      // 提取 msg 内容（中文通话状态）
+      const msgMatch = /<msg><!\[CDATA\[(.*?)\]\]><\/msg>/i.exec(content)
+      const msg = msgMatch?.[1]?.trim() || ''
+
+      // 提取 room_type（0=视频，1=语音）
+      const roomTypeMatch = /<room_type>(\d+)<\/room_type>/i.exec(content)
+      const roomType = roomTypeMatch ? parseInt(roomTypeMatch[1], 10) : -1
+
+      // 构建通话类型标签
+      let callType: string
+      if (roomType === 0) {
+        callType = '视频通话'
+      } else if (roomType === 1) {
+        callType = '语音通话'
+      } else {
+        callType = '通话'
+      }
+
+      // 解析通话状态
+      if (msg.includes('通话时长')) {
+        const durationMatch = /通话时长\s*(\d{1,2}:\d{2}(?::\d{2})?)/i.exec(msg)
+        const duration = durationMatch?.[1] || ''
+        if (duration) {
+          return `[${callType}] ${duration}`
+        }
+        return `[${callType}] 已接听`
+      } else if (msg.includes('对方无应答')) {
+        return `[${callType}] 对方无应答`
+      } else if (msg.includes('已取消')) {
+        return `[${callType}] 已取消`
+      } else if (msg.includes('已在其它设备接听') || msg.includes('已在其他设备接听')) {
+        return `[${callType}] 已在其他设备接听`
+      } else if (msg.includes('对方已拒绝') || msg.includes('已拒绝')) {
+        return `[${callType}] 对方已拒绝`
+      } else if (msg.includes('忙线未接听') || msg.includes('忙线')) {
+        return `[${callType}] 忙线未接听`
+      } else if (msg.includes('未接听')) {
+        return `[${callType}] 未接听`
+      } else if (msg) {
+        return `[${callType}] ${msg}`
+      }
+
+      return `[${callType}]`
+    } catch (e) {
+      console.error('[ExportService] Failed to parse VOIP message:', e)
+      return '[通话]'
+    }
   }
 
   /**
@@ -376,8 +434,8 @@ class ExportService {
       const data = Buffer.from(match[2], 'base64')
       const ext = mime.includes('png') ? '.png'
         : mime.includes('gif') ? '.gif'
-        : mime.includes('webp') ? '.webp'
-        : '.jpg'
+          : mime.includes('webp') ? '.webp'
+            : '.jpg'
       return { data, ext, mime }
     }
     if (avatarUrl.startsWith('file://')) {
@@ -695,7 +753,7 @@ class ExportService {
             ...detailedExport.session,
             avatar: avatars[sessionId]
           }
-          ;(detailedExport as any).avatars = avatars
+            ; (detailedExport as any).avatars = avatars
         }
       }
 
