@@ -1,5 +1,8 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import * as http from 'http'
+import * as https from 'https'
+import { fileURLToPath } from 'url'
 import { ConfigService } from './config'
 import { wcdbService } from './wcdbService'
 
@@ -229,7 +232,7 @@ class ExportService {
         const title = this.extractXmlValue(content, 'title')
         return title || '[链接]'
       }
-      case 50: return '[通话]'
+      case 50: return this.parseVoipMessage(content)
       case 10000: return this.cleanSystemMessage(content)
       default:
         if (content.includes('<type>57</type>')) {
@@ -259,6 +262,64 @@ class ExportService {
       .replace(/<\/?[a-zA-Z0-9_]+[^>]*>/g, '')
       .replace(/\s+/g, ' ')
       .trim() || '[系统消息]'
+  }
+
+  /**
+   * 解析通话消息
+   * 格式: <voipmsg type="VoIPBubbleMsg"><VoIPBubbleMsg><msg><![CDATA[...]]></msg><room_type>0/1</room_type>...</VoIPBubbleMsg></voipmsg>
+   * room_type: 0 = 语音通话, 1 = 视频通话
+   */
+  private parseVoipMessage(content: string): string {
+    try {
+      if (!content) return '[通话]'
+
+      // 提取 msg 内容（中文通话状态）
+      const msgMatch = /<msg><!\[CDATA\[(.*?)\]\]><\/msg>/i.exec(content)
+      const msg = msgMatch?.[1]?.trim() || ''
+
+      // 提取 room_type（0=视频，1=语音）
+      const roomTypeMatch = /<room_type>(\d+)<\/room_type>/i.exec(content)
+      const roomType = roomTypeMatch ? parseInt(roomTypeMatch[1], 10) : -1
+
+      // 构建通话类型标签
+      let callType: string
+      if (roomType === 0) {
+        callType = '视频通话'
+      } else if (roomType === 1) {
+        callType = '语音通话'
+      } else {
+        callType = '通话'
+      }
+
+      // 解析通话状态
+      if (msg.includes('通话时长')) {
+        const durationMatch = /通话时长\s*(\d{1,2}:\d{2}(?::\d{2})?)/i.exec(msg)
+        const duration = durationMatch?.[1] || ''
+        if (duration) {
+          return `[${callType}] ${duration}`
+        }
+        return `[${callType}] 已接听`
+      } else if (msg.includes('对方无应答')) {
+        return `[${callType}] 对方无应答`
+      } else if (msg.includes('已取消')) {
+        return `[${callType}] 已取消`
+      } else if (msg.includes('已在其它设备接听') || msg.includes('已在其他设备接听')) {
+        return `[${callType}] 已在其他设备接听`
+      } else if (msg.includes('对方已拒绝') || msg.includes('已拒绝')) {
+        return `[${callType}] 对方已拒绝`
+      } else if (msg.includes('忙线未接听') || msg.includes('忙线')) {
+        return `[${callType}] 忙线未接听`
+      } else if (msg.includes('未接听')) {
+        return `[${callType}] 未接听`
+      } else if (msg) {
+        return `[${callType}] ${msg}`
+      }
+
+      return `[${callType}]`
+    } catch (e) {
+      console.error('[ExportService] Failed to parse VOIP message:', e)
+      return '[通话]'
+    }
   }
 
   /**
@@ -298,9 +359,9 @@ class ExportService {
     sessionId: string,
     cleanedMyWxid: string,
     dateRange?: { start: number; end: number } | null
-  ): Promise<{ rows: any[]; memberSet: Map<string, ChatLabMember>; firstTime: number | null; lastTime: number | null }> {
+  ): Promise<{ rows: any[]; memberSet: Map<string, { member: ChatLabMember; avatarUrl?: string }>; firstTime: number | null; lastTime: number | null }> {
     const rows: any[] = []
-    const memberSet = new Map<string, ChatLabMember>()
+    const memberSet = new Map<string, { member: ChatLabMember; avatarUrl?: string }>()
     let firstTime: number | null = null
     let lastTime: number | null = null
 
@@ -336,8 +397,11 @@ class ExportService {
           const memberInfo = await this.getContactInfo(actualSender)
           if (!memberSet.has(actualSender)) {
             memberSet.set(actualSender, {
-              platformId: actualSender,
-              accountName: memberInfo.displayName
+              member: {
+                platformId: actualSender,
+                accountName: memberInfo.displayName
+              },
+              avatarUrl: memberInfo.avatarUrl
             })
           }
 
@@ -359,6 +423,121 @@ class ExportService {
     }
 
     return { rows, memberSet, firstTime, lastTime }
+  }
+
+  private resolveAvatarFile(avatarUrl?: string): { data?: Buffer; sourcePath?: string; sourceUrl?: string; ext: string; mime?: string } | null {
+    if (!avatarUrl) return null
+    if (avatarUrl.startsWith('data:')) {
+      const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(avatarUrl)
+      if (!match) return null
+      const mime = match[1].toLowerCase()
+      const data = Buffer.from(match[2], 'base64')
+      const ext = mime.includes('png') ? '.png'
+        : mime.includes('gif') ? '.gif'
+          : mime.includes('webp') ? '.webp'
+            : '.jpg'
+      return { data, ext, mime }
+    }
+    if (avatarUrl.startsWith('file://')) {
+      try {
+        const sourcePath = fileURLToPath(avatarUrl)
+        const ext = path.extname(sourcePath) || '.jpg'
+        return { sourcePath, ext }
+      } catch {
+        return null
+      }
+    }
+    if (avatarUrl.startsWith('http://') || avatarUrl.startsWith('https://')) {
+      const url = new URL(avatarUrl)
+      const ext = path.extname(url.pathname) || '.jpg'
+      return { sourceUrl: avatarUrl, ext }
+    }
+    const sourcePath = avatarUrl
+    const ext = path.extname(sourcePath) || '.jpg'
+    return { sourcePath, ext }
+  }
+
+  private async downloadToBuffer(url: string, remainingRedirects = 2): Promise<{ data: Buffer; mime?: string } | null> {
+    const client = url.startsWith('https:') ? https : http
+    return new Promise((resolve) => {
+      const request = client.get(url, (res) => {
+        const status = res.statusCode || 0
+        if (status >= 300 && status < 400 && res.headers.location && remainingRedirects > 0) {
+          res.resume()
+          const redirectedUrl = new URL(res.headers.location, url).href
+          this.downloadToBuffer(redirectedUrl, remainingRedirects - 1)
+            .then(resolve)
+          return
+        }
+        if (status < 200 || status >= 300) {
+          res.resume()
+          resolve(null)
+          return
+        }
+        const chunks: Buffer[] = []
+        res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+        res.on('end', () => {
+          const data = Buffer.concat(chunks)
+          const mime = typeof res.headers['content-type'] === 'string' ? res.headers['content-type'] : undefined
+          resolve({ data, mime })
+        })
+      })
+      request.on('error', () => resolve(null))
+      request.setTimeout(15000, () => {
+        request.destroy()
+        resolve(null)
+      })
+    })
+  }
+
+  private async exportAvatars(
+    members: Array<{ username: string; avatarUrl?: string }>
+  ): Promise<Map<string, string>> {
+    const result = new Map<string, string>()
+    if (members.length === 0) return result
+
+    for (const member of members) {
+      const fileInfo = this.resolveAvatarFile(member.avatarUrl)
+      if (!fileInfo) continue
+      try {
+        let data: Buffer | null = null
+        let mime = fileInfo.mime
+        if (fileInfo.data) {
+          data = fileInfo.data
+        } else if (fileInfo.sourcePath && fs.existsSync(fileInfo.sourcePath)) {
+          data = await fs.promises.readFile(fileInfo.sourcePath)
+        } else if (fileInfo.sourceUrl) {
+          const downloaded = await this.downloadToBuffer(fileInfo.sourceUrl)
+          if (downloaded) {
+            data = downloaded.data
+            mime = downloaded.mime || mime
+          }
+        }
+        if (!data) continue
+        const finalMime = mime || this.inferImageMime(fileInfo.ext)
+        const base64 = data.toString('base64')
+        result.set(member.username, `data:${finalMime};base64,${base64}`)
+      } catch {
+        continue
+      }
+    }
+
+    return result
+  }
+
+  private inferImageMime(ext: string): string {
+    switch (ext.toLowerCase()) {
+      case '.png':
+        return 'image/png'
+      case '.gif':
+        return 'image/gif'
+      case '.webp':
+        return 'image/webp'
+      case '.bmp':
+        return 'image/bmp'
+      default:
+        return 'image/jpeg'
+    }
   }
 
   /**
@@ -399,7 +578,7 @@ class ExportService {
       })
 
       const chatLabMessages: ChatLabMessage[] = allMessages.map((msg) => {
-        const memberInfo = collected.memberSet.get(msg.senderUsername) || {
+        const memberInfo = collected.memberSet.get(msg.senderUsername)?.member || {
           platformId: msg.senderUsername,
           accountName: msg.senderUsername
         }
@@ -410,6 +589,23 @@ class ExportService {
           type: this.convertMessageType(msg.localType, msg.content),
           content: this.parseMessageContent(msg.content, msg.localType)
         }
+      })
+
+      const avatarMap = options.exportAvatars
+        ? await this.exportAvatars(
+          [
+            ...Array.from(collected.memberSet.entries()).map(([username, info]) => ({
+              username,
+              avatarUrl: info.avatarUrl
+            })),
+            { username: sessionId, avatarUrl: sessionInfo.avatarUrl }
+          ]
+        )
+        : new Map<string, string>()
+
+      const members = Array.from(collected.memberSet.values()).map((info) => {
+        const avatar = avatarMap.get(info.member.platformId)
+        return avatar ? { ...info.member, avatar } : info.member
       })
 
       const chatLabExport: ChatLabExport = {
@@ -424,7 +620,7 @@ class ExportService {
           type: isGroup ? 'group' : 'private',
           ...(isGroup && { groupId: sessionId })
         },
-        members: Array.from(collected.memberSet.values()),
+        members,
         messages: chatLabMessages
       }
 
@@ -536,6 +732,29 @@ class ExportService {
           messageCount: allMessages.length
         },
         messages: allMessages
+      }
+
+      if (options.exportAvatars) {
+        const avatarMap = await this.exportAvatars(
+          [
+            ...Array.from(collected.memberSet.entries()).map(([username, info]) => ({
+              username,
+              avatarUrl: info.avatarUrl
+            })),
+            { username: sessionId, avatarUrl: sessionInfo.avatarUrl }
+          ]
+        )
+        const avatars: Record<string, string> = {}
+        for (const [username, relPath] of avatarMap.entries()) {
+          avatars[username] = relPath
+        }
+        if (Object.keys(avatars).length > 0) {
+          detailedExport.session = {
+            ...detailedExport.session,
+            avatar: avatars[sessionId]
+          }
+            ; (detailedExport as any).avatars = avatars
+        }
       }
 
       fs.writeFileSync(outputPath, JSON.stringify(detailedExport, null, 2), 'utf-8')

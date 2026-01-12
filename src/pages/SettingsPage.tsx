@@ -3,19 +3,18 @@ import { useAppStore } from '../stores/appStore'
 import { useThemeStore, themes } from '../stores/themeStore'
 import { dialog } from '../services/ipc'
 import * as configService from '../services/config'
-import { 
+import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Save, Plug, Check, Sun, Moon,
   Palette, Database, Download, HardDrive, Info, RefreshCw
 } from 'lucide-react'
 import './SettingsPage.scss'
 
-type SettingsTab = 'appearance' | 'database' | 'export' | 'cache' | 'about'
+type SettingsTab = 'appearance' | 'database' | 'cache' | 'about'
 
 const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'database', label: '数据库连接', icon: Database },
-  { id: 'export', label: '导出', icon: Download },
   { id: 'cache', label: '缓存', icon: HardDrive },
   { id: 'about', label: '关于', icon: Info }
 ]
@@ -31,10 +30,8 @@ function SettingsPage() {
   const [dbPath, setDbPath] = useState('')
   const [wxid, setWxid] = useState('')
   const [cachePath, setCachePath] = useState('')
-  const [exportPath, setExportPath] = useState('')
-  const [defaultExportPath, setDefaultExportPath] = useState('')
   const [logEnabled, setLogEnabled] = useState(false)
-  
+
   const [isLoading, setIsLoadingState] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
   const [isDetectingPath, setIsDetectingPath] = useState(false)
@@ -53,7 +50,6 @@ function SettingsPage() {
 
   useEffect(() => {
     loadConfig()
-    loadDefaultExportPath()
     loadAppVersion()
   }, [])
 
@@ -80,12 +76,11 @@ function SettingsPage() {
       const savedLogEnabled = await configService.getLogEnabled()
       const savedImageXorKey = await configService.getImageXorKey()
       const savedImageAesKey = await configService.getImageAesKey()
-      
+
       if (savedKey) setDecryptKey(savedKey)
       if (savedPath) setDbPath(savedPath)
       if (savedWxid) setWxid(savedWxid)
       if (savedCachePath) setCachePath(savedCachePath)
-      if (savedExportPath) setExportPath(savedExportPath)
       if (savedImageXorKey != null) {
         setImageXorKey(`0x${savedImageXorKey.toString(16).toUpperCase().padStart(2, '0')}`)
       }
@@ -96,14 +91,7 @@ function SettingsPage() {
     }
   }
 
-  const loadDefaultExportPath = async () => {
-    try {
-      const downloadsPath = await window.electronAPI.app.getDownloadsPath()
-      setDefaultExportPath(downloadsPath)
-    } catch (e) {
-      console.error('获取默认导出路径失败:', e)
-    }
-  }
+
 
   const loadAppVersion = async () => {
     try {
@@ -166,7 +154,7 @@ function SettingsPage() {
         setDbPath(result.path)
         await configService.setDbPath(result.path)
         showMessage(`自动检测成功：${result.path}`, true)
-        
+
         const wxids = await window.electronAPI.dbPath.scanWxids(result.path)
         if (wxids.length === 1) {
           setWxid(wxids[0].wxid)
@@ -230,18 +218,7 @@ function SettingsPage() {
     }
   }
 
-  const handleSelectExportPath = async () => {
-    try {
-      const result = await dialog.openFile({ title: '选择导出目录', properties: ['openDirectory'] })
-      if (!result.canceled && result.filePaths.length > 0) {
-        setExportPath(result.filePaths[0])
-        await configService.setExportPath(result.filePaths[0])
-        showMessage('已设置导出目录', true)
-      }
-    } catch (e) {
-      showMessage('选择目录失败', false)
-    }
-  }
+
 
   const handleAutoGetDbKey = async () => {
     if (isFetchingDbKey) return
@@ -303,16 +280,7 @@ function SettingsPage() {
     }
   }
 
-  const handleResetExportPath = async () => {
-    try {
-      const downloadsPath = await window.electronAPI.app.getDownloadsPath()
-      setExportPath(downloadsPath)
-      await configService.setExportPath(downloadsPath)
-      showMessage('已恢复为下载目录', true)
-    } catch (e) {
-      showMessage('恢复默认失败', false)
-    }
-  }
+
 
   const handleTestConnection = async () => {
     if (!dbPath) { showMessage('请先选择数据库目录', false); return }
@@ -396,7 +364,6 @@ function SettingsPage() {
       setDbPath('')
       setWxid('')
       setCachePath('')
-      setExportPath('')
       setLogEnabled(false)
       setDbConnected(false)
       await window.electronAPI.window.openOnboardingWindow()
@@ -562,19 +529,7 @@ function SettingsPage() {
     </div>
   )
 
-  const renderExportTab = () => (
-    <div className="tab-content">
-      <div className="form-group">
-        <label>导出目录</label>
-        <span className="form-hint">聊天记录导出的默认保存位置</span>
-        <input type="text" placeholder={defaultExportPath || '系统下载目录'} value={exportPath || defaultExportPath} onChange={(e) => setExportPath(e.target.value)} />
-        <div className="btn-row">
-          <button className="btn btn-secondary" onClick={handleSelectExportPath}><FolderOpen size={16} /> 浏览选择</button>
-          <button className="btn btn-secondary" onClick={handleResetExportPath}><RotateCcw size={16} /> 恢复默认</button>
-        </div>
-      </div>
-    </div>
-  )
+
 
   const renderCacheTab = () => (
     <div className="tab-content">
@@ -603,7 +558,7 @@ function SettingsPage() {
         <h2 className="about-name">WeFlow</h2>
         <p className="about-slogan">WeFlow</p>
         <p className="about-version">v{appVersion || '...'}</p>
-        
+
         <div className="about-update">
           {updateInfo?.hasUpdate ? (
             <>
@@ -672,7 +627,6 @@ function SettingsPage() {
       <div className="settings-body">
         {activeTab === 'appearance' && renderAppearanceTab()}
         {activeTab === 'database' && renderDatabaseTab()}
-        {activeTab === 'export' && renderExportTab()}
         {activeTab === 'cache' && renderCacheTab()}
         {activeTab === 'about' && renderAboutTab()}
       </div>

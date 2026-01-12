@@ -55,6 +55,11 @@ export interface ElectronAPI {
   chat: {
     connect: () => Promise<{ success: boolean; error?: string }>
     getSessions: () => Promise<{ success: boolean; sessions?: ChatSession[]; error?: string }>
+    enrichSessionsContactInfo: (usernames: string[]) => Promise<{
+      success: boolean
+      contacts?: Record<string, { displayName?: string; avatarUrl?: string }>
+      error?: string
+    }>
     getMessages: (sessionId: string, offset?: number, limit?: number) => Promise<{
       success: boolean;
       messages?: Message[];

@@ -91,6 +91,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chat: {
     connect: () => ipcRenderer.invoke('chat:connect'),
     getSessions: () => ipcRenderer.invoke('chat:getSessions'),
+    enrichSessionsContactInfo: (usernames: string[]) =>
+      ipcRenderer.invoke('chat:enrichSessionsContactInfo', usernames),
     getMessages: (sessionId: string, offset?: number, limit?: number) =>
       ipcRenderer.invoke('chat:getMessages', sessionId, offset, limit),
     getLatestMessages: (sessionId: string, limit?: number) =>

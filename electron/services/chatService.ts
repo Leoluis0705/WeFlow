@@ -166,7 +166,7 @@ class ChatService {
   }
 
   /**
-   * 获取会话列表
+   * 获取会话列表（优化：先返回基础数据，不等待联系人信息加载）
    */
   async getSessions(): Promise<{ success: boolean; sessions?: ChatSession[]; error?: string }> {
     try {
@@ -189,8 +189,10 @@ class ChatService {
         return { success: false, error: `会话表异常: ${detail}${tableInfo}${tables}${columns}` }
       }
 
-      // 转换为 ChatSession
+      // 转换为 ChatSession（先加载缓存，但不等待数据库查询）
       const sessions: ChatSession[] = []
+      const now = Date.now()
+
       for (const row of rows) {
         const username =
           row.username ||
@@ -225,6 +227,15 @@ class ChatService {
         const summary = this.cleanString(row.summary || row.digest || row.last_msg || row.lastMsg || '')
         const lastMsgType = parseInt(row.last_msg_type || row.lastMsgType || '0', 10)
 
+        // 先尝试从缓存获取联系人信息（快速路径）
+        let displayName = username
+        let avatarUrl: string | undefined = undefined
+        const cached = this.avatarCache.get(username)
+        if (cached && now - cached.updatedAt < this.avatarCacheTtlMs) {
+          displayName = cached.displayName || username
+          avatarUrl = cached.avatarUrl
+        }
+
         sessions.push({
           username,
           type: parseInt(row.type || '0', 10),
@@ -233,13 +244,13 @@ class ChatService {
           sortTimestamp: sortTs,
           lastTimestamp: lastTs,
           lastMsgType,
-          displayName: username
+          displayName,
+          avatarUrl
         })
       }
 
-      // 获取联系人信息
-      await this.enrichSessionsWithContacts(sessions)
-
+      // 不等待联系人信息加载，直接返回基础会话列表
+      // 前端可以异步调用 enrichSessionsWithContacts 来补充信息
       return { success: true, sessions }
     } catch (e) {
       console.error('ChatService: 获取会话列表失败:', e)
@@ -248,45 +259,85 @@ class ChatService {
   }
 
   /**
-   * 补充联系人信息
+   * 异步补充会话列表的联系人信息（公开方法，供前端调用）
+   */
+  async enrichSessionsContactInfo(usernames: string[]): Promise<{
+    success: boolean
+    contacts?: Record<string, { displayName?: string; avatarUrl?: string }>
+    error?: string
+  }> {
+    try {
+      if (usernames.length === 0) {
+        return { success: true, contacts: {} }
+      }
+
+      const connectResult = await this.ensureConnected()
+      if (!connectResult.success) {
+        return { success: false, error: connectResult.error }
+      }
+
+      const now = Date.now()
+      const missing: string[] = []
+      const result: Record<string, { displayName?: string; avatarUrl?: string }> = {}
+
+      // 检查缓存
+      for (const username of usernames) {
+        const cached = this.avatarCache.get(username)
+        if (cached && now - cached.updatedAt < this.avatarCacheTtlMs) {
+          result[username] = {
+            displayName: cached.displayName,
+            avatarUrl: cached.avatarUrl
+          }
+        } else {
+          missing.push(username)
+        }
+      }
+
+      // 批量查询缺失的联系人信息
+      if (missing.length > 0) {
+        const [displayNames, avatarUrls] = await Promise.all([
+          wcdbService.getDisplayNames(missing),
+          wcdbService.getAvatarUrls(missing)
+        ])
+
+        for (const username of missing) {
+          const displayName = displayNames.success && displayNames.map ? displayNames.map[username] : undefined
+          const avatarUrl = avatarUrls.success && avatarUrls.map ? avatarUrls.map[username] : undefined
+
+          result[username] = { displayName, avatarUrl }
+
+          // 更新缓存
+          this.avatarCache.set(username, {
+            displayName: displayName || username,
+            avatarUrl,
+            updatedAt: now
+          })
+        }
+      }
+
+      return { success: true, contacts: result }
+    } catch (e) {
+      console.error('ChatService: 补充联系人信息失败:', e)
+      return { success: false, error: String(e) }
+    }
+  }
+
+  /**
+   * 补充联系人信息（私有方法，保持向后兼容）
    */
   private async enrichSessionsWithContacts(sessions: ChatSession[]): Promise<void> {
     if (sessions.length === 0) return
     try {
-      const now = Date.now()
-      const missing: string[] = []
-
-      for (const session of sessions) {
-        const cached = this.avatarCache.get(session.username)
-        if (cached && now - cached.updatedAt < this.avatarCacheTtlMs) {
-          if (cached.displayName) session.displayName = cached.displayName
-          if (cached.avatarUrl) {
-            session.avatarUrl = cached.avatarUrl
-            continue
+      const usernames = sessions.map(s => s.username)
+      const result = await this.enrichSessionsContactInfo(usernames)
+      if (result.success && result.contacts) {
+        for (const session of sessions) {
+          const contact = result.contacts![session.username]
+          if (contact) {
+            if (contact.displayName) session.displayName = contact.displayName
+            if (contact.avatarUrl) session.avatarUrl = contact.avatarUrl
           }
         }
-        missing.push(session.username)
-      }
-
-      if (missing.length === 0) return
-      const missingSet = new Set(missing)
-
-      const [displayNames, avatarUrls] = await Promise.all([
-        wcdbService.getDisplayNames(missing),
-        wcdbService.getAvatarUrls(missing)
-      ])
-
-      for (const session of sessions) {
-        if (!missingSet.has(session.username)) continue
-        const displayName = displayNames.success && displayNames.map ? displayNames.map[session.username] : undefined
-        const avatarUrl = avatarUrls.success && avatarUrls.map ? avatarUrls.map[session.username] : undefined
-        if (displayName) session.displayName = displayName
-        if (avatarUrl) session.avatarUrl = avatarUrl
-        this.avatarCache.set(session.username, {
-          displayName: session.displayName,
-          avatarUrl: session.avatarUrl,
-          updatedAt: now
-        })
       }
     } catch (e) {
       console.error('ChatService: 获取联系人信息失败:', e)
@@ -721,7 +772,7 @@ class ChatService {
       case 49:
         return this.parseType49(content)
       case 50:
-        return '[通话]'
+        return this.parseVoipMessage(content)
       case 10000:
         return this.cleanSystemMessage(content)
       case 244813135921:
@@ -844,6 +895,67 @@ class ChatService {
       }
     } catch {
       return {}
+    }
+  }
+
+  /**
+   * 解析通话消息
+   * 格式: <voipmsg type="VoIPBubbleMsg"><VoIPBubbleMsg><msg><![CDATA[...]]></msg><room_type>0/1</room_type>...</VoIPBubbleMsg></voipmsg>
+   * room_type: 0 = 语音通话, 1 = 视频通话
+   * msg 状态: 通话时长 XX:XX, 对方无应答, 已取消, 已在其它设备接听, 对方已拒绝 等
+   */
+  private parseVoipMessage(content: string): string {
+    try {
+      if (!content) return '[通话]'
+
+      // 提取 msg 内容（中文通话状态）
+      const msgMatch = /<msg><!\[CDATA\[(.*?)\]\]><\/msg>/i.exec(content)
+      const msg = msgMatch?.[1]?.trim() || ''
+
+      // 提取 room_type（0=视频，1=语音）
+      const roomTypeMatch = /<room_type>(\d+)<\/room_type>/i.exec(content)
+      const roomType = roomTypeMatch ? parseInt(roomTypeMatch[1], 10) : -1
+
+      // 构建通话类型标签
+      let callType: string
+      if (roomType === 0) {
+        callType = '视频通话'
+      } else if (roomType === 1) {
+        callType = '语音通话'
+      } else {
+        callType = '通话'
+      }
+
+      // 解析通话状态
+      if (msg.includes('通话时长')) {
+        // 已接听的通话，提取时长
+        const durationMatch = /通话时长\s*(\d{1,2}:\d{2}(?::\d{2})?)/i.exec(msg)
+        const duration = durationMatch?.[1] || ''
+        if (duration) {
+          return `[${callType}] ${duration}`
+        }
+        return `[${callType}] 已接听`
+      } else if (msg.includes('对方无应答')) {
+        return `[${callType}] 对方无应答`
+      } else if (msg.includes('已取消')) {
+        return `[${callType}] 已取消`
+      } else if (msg.includes('已在其它设备接听') || msg.includes('已在其他设备接听')) {
+        return `[${callType}] 已在其他设备接听`
+      } else if (msg.includes('对方已拒绝') || msg.includes('已拒绝')) {
+        return `[${callType}] 对方已拒绝`
+      } else if (msg.includes('忙线未接听') || msg.includes('忙线')) {
+        return `[${callType}] 忙线未接听`
+      } else if (msg.includes('未接听')) {
+        return `[${callType}] 未接听`
+      } else if (msg) {
+        // 其他状态直接使用 msg 内容
+        return `[${callType}] ${msg}`
+      }
+
+      return `[${callType}]`
+    } catch (e) {
+      console.error('[ChatService] Failed to parse VOIP message:', e)
+      return '[通话]'
     }
   }
 
@@ -977,6 +1089,118 @@ class ChatService {
       }
     } catch {
       return {}
+    }
+  }
+
+  //手动查找 media_*.db 文件（当 WCDB DLL 不支持 listMediaDbs 时的 fallback）
+  private async findMediaDbsManually(): Promise<string[]> {
+    try {
+      const dbPath = this.configService.get('dbPath')
+      const myWxid = this.configService.get('myWxid')
+      if (!dbPath || !myWxid) return []
+
+      // 可能的目录结构：
+      // 1. dbPath 直接指向 db_storage: D:\weixin\WeChat Files\wxid_xxx\db_storage
+      // 2. dbPath 指向账号目录: D:\weixin\WeChat Files\wxid_xxx
+      // 3. dbPath 指向 WeChat Files: D:\weixin\WeChat Files
+      // 4. dbPath 指向微信根目录: D:\weixin
+      // 5. dbPath 指向非标准目录: D:\weixin\xwechat_files
+
+      const searchDirs: string[] = []
+
+      // 尝试1: dbPath 本身就是 db_storage
+      if (basename(dbPath).toLowerCase() === 'db_storage') {
+        searchDirs.push(dbPath)
+      }
+
+      // 尝试2: dbPath/db_storage
+      const dbStorage1 = join(dbPath, 'db_storage')
+      if (existsSync(dbStorage1)) {
+        searchDirs.push(dbStorage1)
+      }
+
+      // 尝试3: dbPath/WeChat Files/[wxid]/db_storage
+      const wechatFiles = join(dbPath, 'WeChat Files')
+      if (existsSync(wechatFiles)) {
+        const wxidDir = join(wechatFiles, myWxid)
+        if (existsSync(wxidDir)) {
+          const dbStorage2 = join(wxidDir, 'db_storage')
+          if (existsSync(dbStorage2)) {
+            searchDirs.push(dbStorage2)
+          }
+        }
+      }
+
+      // 尝试4: 如果 dbPath 已经包含 WeChat Files，直接在其中查找
+      if (dbPath.includes('WeChat Files')) {
+        const parts = dbPath.split(path.sep)
+        const wechatFilesIndex = parts.findIndex(p => p === 'WeChat Files')
+        if (wechatFilesIndex >= 0) {
+          const wechatFilesPath = parts.slice(0, wechatFilesIndex + 1).join(path.sep)
+          const wxidDir = join(wechatFilesPath, myWxid)
+          if (existsSync(wxidDir)) {
+            const dbStorage3 = join(wxidDir, 'db_storage')
+            if (existsSync(dbStorage3) && !searchDirs.includes(dbStorage3)) {
+              searchDirs.push(dbStorage3)
+            }
+          }
+        }
+      }
+
+      // 尝试5: 直接尝试 dbPath/[wxid]/db_storage (适用于 xwechat_files 等非标准目录名)
+      const wxidDirDirect = join(dbPath, myWxid)
+      if (existsSync(wxidDirDirect)) {
+        const dbStorage5 = join(wxidDirDirect, 'db_storage')
+        if (existsSync(dbStorage5) && !searchDirs.includes(dbStorage5)) {
+          searchDirs.push(dbStorage5)
+        }
+      }
+
+      // 在所有可能的目录中查找 media_*.db
+      const mediaDbFiles: string[] = []
+      for (const dir of searchDirs) {
+        if (!existsSync(dir)) continue
+
+        // 直接在当前目录查找
+        const entries = readdirSync(dir)
+        for (const entry of entries) {
+          if (entry.toLowerCase().startsWith('media_') && entry.toLowerCase().endsWith('.db')) {
+            const fullPath = join(dir, entry)
+            if (existsSync(fullPath) && statSync(fullPath).isFile()) {
+              if (!mediaDbFiles.includes(fullPath)) {
+                mediaDbFiles.push(fullPath)
+              }
+            }
+          }
+        }
+
+        // 也检查子目录（特别是 message 子目录）
+        for (const entry of entries) {
+          const subDir = join(dir, entry)
+          if (existsSync(subDir) && statSync(subDir).isDirectory()) {
+            try {
+              const subEntries = readdirSync(subDir)
+              for (const subEntry of subEntries) {
+                if (subEntry.toLowerCase().startsWith('media_') && subEntry.toLowerCase().endsWith('.db')) {
+                  const fullPath = join(subDir, subEntry)
+                  if (existsSync(fullPath) && statSync(fullPath).isFile()) {
+                    if (!mediaDbFiles.includes(fullPath)) {
+                      mediaDbFiles.push(fullPath)
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              // 忽略无法访问的子目录
+            }
+          }
+        }
+      }
+
+      return mediaDbFiles
+    } catch (e) {
+      console.error('[ChatService] 手动查找 media 数据库失败:', e)
+      return []
     }
   }
 
@@ -1833,13 +2057,20 @@ class ChatService {
       })
 
       // 2. 查找所有的 media_*.db
-      const mediaDbs = await wcdbService.listMediaDbs()
-      if (!mediaDbs.success || !mediaDbs.data) return { success: false, error: '获取媒体库失败' }
-      console.info('[ChatService][Voice] media dbs', mediaDbs.data)
+      let mediaDbs = await wcdbService.listMediaDbs()
+      // Fallback: 如果 WCDB DLL 不支持 listMediaDbs，手动查找
+      if (!mediaDbs.success || !mediaDbs.data || mediaDbs.data.length === 0) {
+        const manualMediaDbs = await this.findMediaDbsManually()
+        if (manualMediaDbs.length > 0) {
+          mediaDbs = { success: true, data: manualMediaDbs }
+        } else {
+          return { success: false, error: '未找到媒体库文件 (media_*.db)' }
+        }
+      }
 
       // 3. 在所有媒体库中查找该消息的语音数据
       let silkData: Buffer | null = null
-      for (const dbPath of mediaDbs.data) {
+      for (const dbPath of (mediaDbs.data || [])) {
         const voiceTable = await this.resolveVoiceInfoTableName(dbPath)
         if (!voiceTable) {
           console.warn('[ChatService][Voice] voice table not found', dbPath)
@@ -2165,7 +2396,7 @@ class ChatService {
             .prepare(`SELECT dir_name FROM ${state.dirTable} WHERE dir_id = ? AND username = ? LIMIT 1`)
             .get(dir2, sessionId) as { dir_name?: string } | undefined
           if (dirRow?.dir_name) dirName = dirRow.dir_name as string
-        } catch {}
+        } catch { }
       }
 
       const fullPath = join(accountDir, dir1, dirName, fileName)
@@ -2173,7 +2404,7 @@ class ChatService {
 
       const withDat = `${fullPath}.dat`
       if (existsSync(withDat)) return withDat
-    } catch {}
+    } catch { }
     return null
   }
 

@@ -390,6 +390,10 @@ function registerIpcHandlers() {
     return chatService.getSessions()
   })
 
+  ipcMain.handle('chat:enrichSessionsContactInfo', async (_, usernames: string[]) => {
+    return chatService.enrichSessionsContactInfo(usernames)
+  })
+
   ipcMain.handle('chat:getMessages', async (_, sessionId: string, offset?: number, limit?: number) => {
     return chatService.getMessages(sessionId, offset, limit)
   })

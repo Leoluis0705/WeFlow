@@ -379,28 +379,20 @@
     border-radius: 10px;
     font-size: 14px;
     color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.2s;
+
+    &:hover {
+      background: var(--bg-hover);
+    }
 
     svg {
       color: var(--text-tertiary);
+      flex-shrink: 0;
     }
 
     span {
       flex: 1;
-    }
-
-    .change-btn {
-      background: none;
-      border: none;
-      padding: 4px;
-      cursor: pointer;
-      color: var(--text-tertiary);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-
-      &:hover {
-        color: var(--text-primary);
-      }
     }
   }
 
@@ -469,6 +461,43 @@
     font-size: 12px;
     color: var(--text-tertiary);
     margin: 8px 0 0;
+  }
+
+  .select-folder-btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 16px;
+    margin-top: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.2s;
+
+    &:hover {
+      background: var(--bg-hover);
+      border-color: var(--primary);
+      color: var(--primary);
+
+      svg {
+        color: var(--primary);
+      }
+    }
+
+    &:active {
+      transform: scale(0.98);
+    }
+
+    svg {
+      color: var(--text-secondary);
+      transition: color 0.2s;
+    }
   }
 
   .export-action {
@@ -649,9 +678,245 @@
       }
     }
   }
+
+  .date-picker-modal {
+    background: var(--card-bg);
+    padding: 28px 32px;
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    min-width: 420px;
+    max-width: 500px;
+
+    h3 {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin: 0 0 20px;
+    }
+
+    .quick-select {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+
+      .quick-btn {
+        flex: 1;
+        padding: 10px 12px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+        cursor: pointer;
+        transition: all 0.2s;
+
+        &:hover {
+          background: var(--bg-hover);
+          border-color: var(--primary);
+          color: var(--primary);
+        }
+
+        &:active {
+          transform: scale(0.98);
+        }
+      }
+    }
+
+    .date-display {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 20px;
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      margin-bottom: 24px;
+
+      .date-display-item {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.2s;
+
+        &:hover {
+          background: rgba(var(--primary-rgb), 0.05);
+        }
+
+        &.active {
+          background: rgba(var(--primary-rgb), 0.1);
+          border: 1px solid var(--primary);
+        }
+
+        .date-label {
+          font-size: 12px;
+          color: var(--text-tertiary);
+          font-weight: 500;
+        }
+
+        .date-value {
+          font-size: 15px;
+          color: var(--text-primary);
+          font-weight: 600;
+        }
+      }
+
+      .date-separator {
+        font-size: 14px;
+        color: var(--text-tertiary);
+        padding: 0 4px;
+      }
+    }
+
+    .calendar-container {
+      margin-bottom: 20px;
+    }
+
+    .calendar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding: 0 4px;
+
+      .calendar-nav-btn {
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        cursor: pointer;
+        color: var(--text-secondary);
+        transition: all 0.2s;
+
+        &:hover {
+          background: var(--bg-hover);
+          border-color: var(--primary);
+          color: var(--primary);
+        }
+
+        &:active {
+          transform: scale(0.95);
+        }
+      }
+
+      .calendar-month {
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+    }
+
+    .calendar-weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 4px;
+      margin-bottom: 8px;
+
+      .calendar-weekday {
+        text-align: center;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--text-tertiary);
+        padding: 8px 0;
+      }
+    }
+
+    .calendar-days {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 4px;
+
+      .calendar-day {
+        aspect-ratio: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        color: var(--text-primary);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.2s;
+        position: relative;
+
+        &.empty {
+          cursor: default;
+        }
+
+        &:not(.empty):hover {
+          background: var(--bg-hover);
+        }
+
+        &.in-range {
+          background: rgba(var(--primary-rgb), 0.08);
+        }
+
+        &.start,
+        &.end {
+          background: var(--primary);
+          color: #fff;
+          font-weight: 600;
+
+          &:hover {
+            background: var(--primary-hover);
+          }
+        }
+      }
+    }
+
+    .date-picker-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+
+      button {
+        padding: 10px 20px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s;
+
+        &:active {
+          transform: scale(0.98);
+        }
+      }
+
+      .cancel-btn {
+        background: var(--bg-secondary);
+        color: var(--text-primary);
+        border: 1px solid var(--border-color);
+
+        &:hover {
+          background: var(--bg-hover);
+        }
+      }
+
+      .confirm-btn {
+        background: var(--primary);
+        color: #fff;
+        border: none;
+
+        &:hover {
+          background: var(--primary-hover);
+        }
+      }
+    }
+  }
 }
 
 @keyframes exportSpin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
