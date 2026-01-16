@@ -1725,6 +1725,45 @@ class ChatService {
     return join(documentsPath, 'WeFlow', 'Emojis')
   }
 
+  clearCaches(options?: { includeMessages?: boolean; includeContacts?: boolean; includeEmojis?: boolean }): { success: boolean; error?: string } {
+    const includeMessages = options?.includeMessages !== false
+    const includeContacts = options?.includeContacts !== false
+    const includeEmojis = options?.includeEmojis !== false
+    const errors: string[] = []
+
+    if (includeContacts) {
+      this.avatarCache.clear()
+      this.contactCacheService.clear()
+    }
+
+    if (includeMessages) {
+      this.messageCacheService.clear()
+    }
+
+    for (const state of this.hardlinkCache.values()) {
+      try {
+        state.db?.close()
+      } catch { }
+    }
+    this.hardlinkCache.clear()
+
+    if (includeEmojis) {
+      emojiCache.clear()
+      emojiDownloading.clear()
+      const emojiDir = this.getEmojiCacheDir()
+      try {
+        fs.rmSync(emojiDir, { recursive: true, force: true })
+      } catch (error) {
+        errors.push(String(error))
+      }
+    }
+
+    if (errors.length > 0) {
+      return { success: false, error: errors.join('; ') }
+    }
+    return { success: true }
+  }
+
   /**
    * 下载并缓存表情包
    */
@@ -2109,7 +2148,7 @@ class ChatService {
       if (!msgResult.success || !msgResult.message) return { success: false, error: '未找到该消息' }
       const msg = msgResult.message
       if (msg.isSend === 1) {
-        return { success: false, error: '暂不支持解密自己发送的语音' }
+        console.info('[ChatService][Voice] self-sent voice, continue decrypt flow')
       }
 
       const candidates = this.getVoiceLookupCandidates(sessionId, msg)
