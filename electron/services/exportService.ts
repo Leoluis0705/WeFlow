@@ -1605,6 +1605,14 @@ class ExportService {
     }
   }
 
+  private getWeflowHeader(): { version: string; exportedAt: number; generator: string } {
+    return {
+      version: '1.0.3',
+      exportedAt: Math.floor(Date.now() / 1000),
+      generator: 'WeFlow'
+    }
+  }
+
   /**
    * 生成通用的导出元数据 (参考 ChatLab 格式)
    */
@@ -2005,7 +2013,9 @@ class ExportService {
         options.displayNamePreference || 'remark'
       )
 
+      const weflow = this.getWeflowHeader()
       const detailedExport: any = {
+        weflow,
         session: {
           wxid: sessionId,
           nickname: sessionNickname,
