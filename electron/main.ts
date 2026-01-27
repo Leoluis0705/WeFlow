@@ -18,6 +18,7 @@ import { KeyService } from './services/keyService'
 import { voiceTranscribeService } from './services/voiceTranscribeService'
 import { videoService } from './services/videoService'
 import { snsService } from './services/snsService'
+import { contactExportService } from './services/contactExportService'
 
 
 // 配置自动更新
@@ -625,11 +626,15 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('chat:getContact', async (_, username: string) => {
-    return chatService.getContact(username)
+    return await chatService.getContact(username)
   })
 
   ipcMain.handle('chat:getContactAvatar', async (_, username: string) => {
-    return chatService.getContactAvatar(username)
+    return await chatService.getContactAvatar(username)
+  })
+
+  ipcMain.handle('chat:getContacts', async () => {
+    return await chatService.getContacts()
   })
 
   ipcMain.handle('chat:getCachedMessages', async (_, sessionId: string) => {
@@ -708,6 +713,10 @@ function registerIpcHandlers() {
 
   ipcMain.handle('export:exportSession', async (_, sessionId: string, outputPath: string, options: ExportOptions) => {
     return exportService.exportSessionToChatLab(sessionId, outputPath, options)
+  })
+
+  ipcMain.handle('export:exportContacts', async (_, outputDir: string, options: any) => {
+    return contactExportService.exportContacts(outputDir, options)
   })
 
   // 数据分析相关
