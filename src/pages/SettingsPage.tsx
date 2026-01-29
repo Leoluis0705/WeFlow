@@ -8,11 +8,12 @@ import * as configService from '../services/config'
 import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Save, Plug, Check, Sun, Moon,
-  Palette, Database, Download, HardDrive, Info, RefreshCw, ChevronDown, Mic
+  Palette, Database, Download, HardDrive, Info, RefreshCw, ChevronDown, Mic,
+  ShieldCheck, Fingerprint, Lock, KeyRound
 } from 'lucide-react'
 import './SettingsPage.scss'
 
-type SettingsTab = 'appearance' | 'database' | 'whisper' | 'export' | 'cache' | 'about'
+type SettingsTab = 'appearance' | 'database' | 'whisper' | 'export' | 'cache' | 'security' | 'about'
 
 const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
@@ -20,6 +21,7 @@ const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'whisper', label: '语音识别模型', icon: Mic },
   { id: 'export', label: '导出', icon: Download },
   { id: 'cache', label: '缓存', icon: HardDrive },
+  { id: 'security', label: '安全', icon: ShieldCheck },
   { id: 'about', label: '关于', icon: Info }
 ]
 
@@ -95,7 +97,30 @@ function SettingsPage() {
   const [isClearingImageCache, setIsClearingImageCache] = useState(false)
   const [isClearingAllCache, setIsClearingAllCache] = useState(false)
 
+  // 安全设置 state
+  const [authEnabled, setAuthEnabled] = useState(false)
+  const [authUseHello, setAuthUseHello] = useState(false)
+  const [helloAvailable, setHelloAvailable] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [isSettingHello, setIsSettingHello] = useState(false)
+
   const isClearingCache = isClearingAnalyticsCache || isClearingImageCache || isClearingAllCache
+
+  // 检查 Hello 可用性
+  useEffect(() => {
+    if (window.PublicKeyCredential) {
+      void PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(setHelloAvailable)
+    }
+  }, [])
+
+  async function sha256(message: string) {
+    const msgBuffer = new TextEncoder().encode(message)
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer)
+    const hashArray = Array.from(new Uint8Array(hashBuffer))
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+    return hashHex
+  }
 
   useEffect(() => {
     loadConfig()
@@ -154,6 +179,11 @@ function SettingsPage() {
       const savedExportDefaultExcelCompactColumns = await configService.getExportDefaultExcelCompactColumns()
       const savedExportDefaultConcurrency = await configService.getExportDefaultConcurrency()
 
+      const savedAuthEnabled = await configService.getAuthEnabled()
+      const savedAuthUseHello = await configService.getAuthUseHello()
+      setAuthEnabled(savedAuthEnabled)
+      setAuthUseHello(savedAuthUseHello)
+
       if (savedPath) setDbPath(savedPath)
       if (savedWxid) setWxid(savedWxid)
       if (savedCachePath) setCachePath(savedCachePath)
@@ -191,7 +221,7 @@ function SettingsPage() {
 
 
       if (savedWhisperModelDir) setWhisperModelDir(savedWhisperModelDir)
-    } catch (e) {
+    } catch (e: any) {
       console.error('加载配置失败:', e)
     }
   }
@@ -217,7 +247,7 @@ function SettingsPage() {
     try {
       const version = await window.electronAPI.app.getVersion()
       setAppVersion(version)
-    } catch (e) {
+    } catch (e: any) {
       console.error('获取版本号失败:', e)
     }
   }
@@ -256,7 +286,7 @@ function SettingsPage() {
       } else {
         showMessage('当前已是最新版', true)
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`检查更新失败: ${e}`, false)
     } finally {
       setIsCheckingUpdate(false)
@@ -271,7 +301,7 @@ function SettingsPage() {
     try {
       showMessage('正在下载更新...', true)
       await window.electronAPI.app.downloadAndInstall()
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`更新失败: ${e}`, false)
       setIsDownloading(false)
     }
@@ -366,7 +396,7 @@ function SettingsPage() {
         if (!result.success && result.error) {
           showMessage(result.error, false)
         }
-      } catch (e) {
+      } catch (e: any) {
         showMessage(`切换账号后重新连接失败: ${e}`, false)
         setDbConnected(false)
       }
@@ -403,7 +433,7 @@ function SettingsPage() {
       } else {
         showMessage(result.error || '未能自动检测到数据库目录', false)
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`自动检测失败: ${e}`, false)
     } finally {
       setIsDetectingPath(false)
@@ -417,7 +447,7 @@ function SettingsPage() {
         setDbPath(result.filePaths[0])
         showMessage('已选择数据库目录', true)
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage('选择目录失败', false)
     }
   }
@@ -445,7 +475,7 @@ function SettingsPage() {
       } else {
         if (!silent) showMessage('未检测到账号目录，请检查路径', false)
       }
-    } catch (e) {
+    } catch (e: any) {
       if (!silent) showMessage(`扫描失败: ${e}`, false)
     }
   }
@@ -461,7 +491,7 @@ function SettingsPage() {
         setCachePath(result.filePaths[0])
         showMessage('已选择缓存目录', true)
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage('选择目录失败', false)
     }
   }
@@ -477,7 +507,7 @@ function SettingsPage() {
         await configService.setWhisperModelDir(dir)
         showMessage('已选择 Whisper 模型目录', true)
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage('选择目录失败', false)
     }
   }
@@ -501,7 +531,7 @@ function SettingsPage() {
       } else {
         showMessage(result.error || '模型下载失败', false)
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`模型下载失败: ${e}`, false)
     } finally {
       setIsWhisperDownloading(false)
@@ -533,7 +563,7 @@ function SettingsPage() {
           showMessage(result.error || '自动获取密钥失败', false)
         }
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`自动获取密钥失败: ${e}`, false)
     } finally {
       setIsFetchingDbKey(false)
@@ -566,7 +596,7 @@ function SettingsPage() {
       } else {
         showMessage(result.error || '自动获取图片密钥失败', false)
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`自动获取图片密钥失败: ${e}`, false)
     } finally {
       setIsFetchingImageKey(false)
@@ -589,7 +619,7 @@ function SettingsPage() {
       } else {
         showMessage(result.error || '连接测试失败', false)
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`连接测试失败: ${e}`, false)
     } finally {
       setIsTesting(false)
@@ -624,8 +654,14 @@ function SettingsPage() {
       await configService.setOnboardingDone(true)
 
       // 保存按钮只负责持久化配置，不做连接测试/重连，避免影响聊天页的活动连接
+
+      // 保存安全配置
+      // 注意：这里只处理开关，密码修改是实时生效的（在 renderSecurityTab 里处理）
+      await configService.setAuthEnabled(authEnabled)
+      await configService.setAuthUseHello(authUseHello)
+
       showMessage('配置保存成功', true)
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`保存配置失败: ${e}`, false)
     } finally {
       setIsLoadingState(false)
@@ -657,7 +693,7 @@ function SettingsPage() {
       setIsWhisperDownloading(false)
       setDbConnected(false)
       await window.electronAPI.window.openOnboardingWindow()
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`清除配置失败: ${e}`, false)
     } finally {
       setIsLoadingState(false)
@@ -669,7 +705,7 @@ function SettingsPage() {
     try {
       const logPath = await window.electronAPI.log.getPath()
       await window.electronAPI.shell.openPath(logPath)
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`打开日志失败: ${e}`, false)
     }
   }
@@ -683,7 +719,7 @@ function SettingsPage() {
       }
       await navigator.clipboard.writeText(result.content || '')
       showMessage('日志已复制到剪贴板', true)
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`复制日志失败: ${e}`, false)
     }
   }
@@ -699,7 +735,7 @@ function SettingsPage() {
       } else {
         showMessage(`清除分析缓存失败: ${result.error || '未知错误'}`, false)
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`清除分析缓存失败: ${e}`, false)
     } finally {
       setIsClearingAnalyticsCache(false)
@@ -716,7 +752,7 @@ function SettingsPage() {
       } else {
         showMessage(`清除图片缓存失败: ${result.error || '未知错误'}`, false)
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`清除图片缓存失败: ${e}`, false)
     } finally {
       setIsClearingImageCache(false)
@@ -734,7 +770,7 @@ function SettingsPage() {
       } else {
         showMessage(`清除所有缓存失败: ${result.error || '未知错误'}`, false)
       }
-    } catch (e) {
+    } catch (e: any) {
       showMessage(`清除所有缓存失败: ${e}`, false)
     } finally {
       setIsClearingAllCache(false)
@@ -797,7 +833,7 @@ function SettingsPage() {
       <div className="form-group">
         <label>数据库根目录</label>
         <span className="form-hint">xwechat_files 目录</span>
-        <span className="form-hint" style={{ color: '#ff6b6b' }}>⚠️ 目录路径不可包含中文，如有中文请去微信-设置-存储位置点击更改，迁移至全英文目录</span>
+        <span className="form-hint" style={{ color: '#ff6b6b' }}> 目录路径不可包含中文，如有中文请去微信-设置-存储位置点击更改，迁移至全英文目录</span>
         <input type="text" placeholder="例如: C:\Users\xxx\Documents\xwechat_files" value={dbPath} onChange={(e) => setDbPath(e.target.value)} />
         <div className="btn-row">
           <button className="btn btn-primary" onClick={handleAutoDetectPath} disabled={isDetectingPath}>
@@ -1210,6 +1246,129 @@ function SettingsPage() {
     </div>
   )
 
+  const handleSetupHello = async () => {
+    setIsSettingHello(true)
+    try {
+      const challenge = new Uint8Array(32)
+      window.crypto.getRandomValues(challenge)
+
+      const credential = await navigator.credentials.create({
+        publicKey: {
+          challenge,
+          rp: { name: 'WeFlow', id: window.location.hostname },
+          user: { id: new Uint8Array([1]), name: 'user', displayName: 'User' },
+          pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
+          authenticatorSelection: { userVerification: 'required' },
+          timeout: 60000
+        }
+      })
+
+      if (credential) {
+        setAuthUseHello(true)
+        await configService.setAuthUseHello(true)
+        showMessage('Windows Hello 设置成功', true)
+      }
+    } catch (e: any) {
+      if (e.name !== 'NotAllowedError') {
+        showMessage(`Windows Hello 设置失败: ${e.message}`, false)
+      }
+    } finally {
+      setIsSettingHello(false)
+    }
+  }
+
+  const handleUpdatePassword = async () => {
+    if (!newPassword || newPassword !== confirmPassword) {
+      showMessage('两次密码不一致', false)
+      return
+    }
+
+    // 简单的保存逻辑，实际上应该先验证旧密码，但为了简化流程，这里直接允许覆盖
+    // 因为能进入设置页面说明已经解锁了
+    try {
+      const hash = await sha256(newPassword)
+      await configService.setAuthPassword(hash)
+      await configService.setAuthEnabled(true)
+      setAuthEnabled(true)
+      setNewPassword('')
+      setConfirmPassword('')
+      showMessage('密码已更新', true)
+    } catch (e: any) {
+      showMessage('密码更新失败', false)
+    }
+  }
+
+  const renderSecurityTab = () => (
+    <div className="tab-content">
+      <div className="form-group">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <label>启用应用锁</label>
+            <span className="form-hint">每次启动应用时需要验证密码</span>
+          </div>
+          <label className="switch">
+            <input type="checkbox" checked={authEnabled} onChange={(e) => setAuthEnabled(e.target.checked)} />
+            <span className="switch-slider" />
+          </label>
+        </div>
+      </div>
+
+      <div className="divider" />
+
+      <div className="form-group">
+        <label>重置密码</label>
+        <span className="form-hint">设置新的启动密码</span>
+
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <input
+            type="password"
+            className="field-input"
+            placeholder="新密码"
+            value={newPassword}
+            onChange={e => setNewPassword(e.target.value)}
+          />
+          <div style={{ display: 'flex', gap: 10 }}>
+            <input
+              type="password"
+              className="field-input"
+              placeholder="确认新密码"
+              value={confirmPassword}
+              onChange={e => setConfirmPassword(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <button className="btn btn-primary" onClick={handleUpdatePassword} disabled={!newPassword}>更新</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="divider" />
+
+      <div className="form-group">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <label>Windows Hello</label>
+            <span className="form-hint">使用面容、指纹快速解锁</span>
+            {!helloAvailable && <div className="form-hint warning" style={{ color: '#ff4d4f' }}> 当前设备不支持 Windows Hello</div>}
+          </div>
+
+          <div>
+            {authUseHello ? (
+              <button className="btn btn-secondary btn-sm" onClick={() => setAuthUseHello(false)}>关闭</button>
+            ) : (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleSetupHello}
+                disabled={!helloAvailable || isSettingHello}
+              >
+                {isSettingHello ? '设置中...' : '开启与设置'}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+
   const renderAboutTab = () => (
     <div className="tab-content about-tab">
       <div className="about-card">
@@ -1321,6 +1480,7 @@ function SettingsPage() {
         {activeTab === 'whisper' && renderWhisperTab()}
         {activeTab === 'export' && renderExportTab()}
         {activeTab === 'cache' && renderCacheTab()}
+        {activeTab === 'security' && renderSecurityTab()}
         {activeTab === 'about' && renderAboutTab()}
       </div>
 

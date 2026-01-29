@@ -292,7 +292,7 @@ class ExportService {
           extBuffer = Buffer.from(extBuffer, 'base64')
         } else {
           // 默认尝试hex
-          console.log('⚠️ 无法判断编码格式，默认尝试hex')
+          console.log(' 无法判断编码格式，默认尝试hex')
           try {
             extBuffer = Buffer.from(extBuffer, 'hex')
           } catch (e) {

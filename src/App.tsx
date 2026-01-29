@@ -27,6 +27,7 @@ import './App.scss'
 
 import UpdateDialog from './components/UpdateDialog'
 import UpdateProgressCapsule from './components/UpdateProgressCapsule'
+import LockScreen from './components/LockScreen'
 
 function App() {
   const navigate = useNavigate()
@@ -49,6 +50,10 @@ function App() {
   const isOnboardingWindow = location.pathname === '/onboarding-window'
   const isVideoPlayerWindow = location.pathname === '/video-player-window'
   const [themeHydrated, setThemeHydrated] = useState(false)
+
+  // 锁定状态
+  const [isLocked, setIsLocked] = useState(false)
+  const [lockAvatar, setLockAvatar] = useState('')
 
   // 协议同意状态
   const [showAgreement, setShowAgreement] = useState(false)
@@ -250,6 +255,28 @@ function App() {
     autoConnect()
   }, [isAgreementWindow, isOnboardingWindow, navigate, setDbConnected])
 
+  // 检查应用锁
+  useEffect(() => {
+    if (isAgreementWindow || isOnboardingWindow || isVideoPlayerWindow) return
+
+    const checkLock = async () => {
+      const enabled = await configService.getAuthEnabled()
+      if (enabled) {
+        setIsLocked(true)
+        // 尝试获取头像
+        try {
+          const result = await window.electronAPI.chat.getMyAvatarUrl()
+          if (result && result.success && result.avatarUrl) {
+            setLockAvatar(result.avatarUrl)
+          }
+        } catch (e) {
+          console.error('获取锁屏头像失败', e)
+        }
+      }
+    }
+    checkLock()
+  }, [isAgreementWindow, isOnboardingWindow, isVideoPlayerWindow])
+
   // 独立协议窗口
   if (isAgreementWindow) {
     return <AgreementPage />
@@ -267,6 +294,12 @@ function App() {
   // 主窗口 - 完整布局
   return (
     <div className="app-container">
+      {isLocked && (
+        <LockScreen
+          onUnlock={() => setIsLocked(false)}
+          avatar={lockAvatar}
+        />
+      )}
       <TitleBar />
 
       {/* 全局悬浮进度胶囊 (处理：新版本提示、下载进度、错误提示) */}
@@ -293,13 +326,13 @@ function App() {
               </div>
               <div className="agreement-text">
                 <h4>1. 数据安全</h4>
-                <p>本软件所有数据处理均在本地完成，不会上传任何聊天记录、个人信息到服务器。您的数据完全由您自己掌控。</p>
+                <p>本软件所有数据处理均在本地完成，不会上传任何聊天记录、个人信息到服务器。你的数据完全由你自己掌控。</p>
 
                 <h4>2. 使用须知</h4>
-                <p>本软件仅供个人学习研究使用，请勿用于任何非法用途。使用本软件解密、查看、分析的数据应为您本人所有或已获得授权。</p>
+                <p>本软件仅供个人学习研究使用，请勿用于任何非法用途。使用本软件解密、查看、分析的数据应为你本人所有或已获得授权。</p>
 
                 <h4>3. 免责声明</h4>
-                <p>因使用本软件产生的任何直接或间接损失，开发者不承担任何责任。请确保您的使用行为符合当地法律法规。</p>
+                <p>因使用本软件产生的任何直接或间接损失，开发者不承担任何责任。请确保你的使用行为符合当地法律法规。</p>
 
                 <h4>4. 隐私保护</h4>
                 <p>本软件不收集任何用户数据。软件更新检测仅获取版本信息，不涉及任何个人隐私。</p>
