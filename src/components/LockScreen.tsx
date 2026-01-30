@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import * as configService from '../services/config'
-import { ArrowRight, Fingerprint, Lock, ShieldCheck } from 'lucide-react'
+import { ArrowRight, Fingerprint, Lock, ScanFace, ShieldCheck } from 'lucide-react'
 import './LockScreen.scss'
 
 interface LockScreenProps {
@@ -63,18 +63,6 @@ export default function LockScreen({ onUnlock, avatar, useHello = false }: LockS
                 setShowHello(true)
                 // 立即执行验证 (0延迟)
                 verifyHello()
-
-                // 后台再次确认可用性，如果其实不可用，再隐藏? 
-                // 或者信任用户的配置。为了速度，我们优先信任配置。
-                if (window.PublicKeyCredential) {
-                    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
-                        .then(available => {
-                            if (!available) {
-                                // 如果系统报告不支持，但配置开了，我们可能需要提示?
-                                // 暂时保持开启状态，反正 verifyHello 会报错
-                            }
-                        })
-                }
             }
         } catch (e) {
             console.error('Quick start hello failed', e)
@@ -84,51 +72,23 @@ export default function LockScreen({ onUnlock, avatar, useHello = false }: LockS
     const verifyHello = async () => {
         if (isVerifying || isUnlocked) return
 
-        // 取消之前的请求（如果有）
-        if (abortControllerRef.current) {
-            abortControllerRef.current.abort()
-        }
-
-        const abortController = new AbortController()
-        abortControllerRef.current = abortController
-
         setIsVerifying(true)
         setError('')
+
         try {
-            const challenge = new Uint8Array(32)
-            window.crypto.getRandomValues(challenge)
+            const result = await window.electronAPI.auth.hello()
 
-            const rpId = 'localhost'
-            const credential = await navigator.credentials.get({
-                publicKey: {
-                    challenge,
-                    rpId,
-                    userVerification: 'required',
-                },
-                signal: abortController.signal
-            })
-
-            if (credential) {
+            if (result.success) {
                 handleUnlock()
+            } else {
+                console.error('Hello verification failed:', result.error)
+                setError(result.error || '验证失败')
             }
         } catch (e: any) {
-            if (e.name === 'AbortError') {
-                console.log('Hello verification aborted')
-                return
-            }
-            if (e.name === 'NotAllowedError') {
-                console.log('User cancelled Hello verification')
-            } else {
-                console.error('Hello verification error:', e)
-                // 仅在非手动取消时显示错误
-                if (e.name !== 'AbortError') {
-                    setError(`验证失败: ${e.message || e.name}`)
-                }
-            }
+            console.error('Hello verification error:', e)
+            setError(`验证失败: ${e.message || String(e)}`)
         } finally {
-            if (!abortController.signal.aborted) {
-                setIsVerifying(false)
-            }
+            setIsVerifying(false)
         }
     }
 
@@ -136,11 +96,8 @@ export default function LockScreen({ onUnlock, avatar, useHello = false }: LockS
         e?.preventDefault()
         if (!password || isUnlocked) return
 
-        // 如果正在进行 Hello 验证，取消它
-        if (abortControllerRef.current) {
-            abortControllerRef.current.abort()
-            abortControllerRef.current = null
-        }
+        // 如果正在进行 Hello 验证，它会自动失败或被取代，UI上不用特意取消
+        // 因为 native 调用是模态的或者独立的，我们只要让 JS 状态不对锁住即可
 
         // 不再检查 isVerifying，因为我们允许打断 Hello
         setIsVerifying(true)

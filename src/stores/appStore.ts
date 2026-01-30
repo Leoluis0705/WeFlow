@@ -33,6 +33,10 @@ export interface AppState {
   setShowUpdateDialog: (show: boolean) => void
   setUpdateError: (error: string | null) => void
 
+  // 锁定状态
+  isLocked: boolean
+  setLocked: (locked: boolean) => void
+
   reset: () => void
 }
 
@@ -42,6 +46,7 @@ export const useAppStore = create<AppState>((set) => ({
   myWxid: null,
   isLoading: false,
   loadingText: '',
+  isLocked: false,
 
   // 更新状态初始化
   updateInfo: null,
@@ -62,6 +67,8 @@ export const useAppStore = create<AppState>((set) => ({
     loadingText: text ?? ''
   }),
 
+  setLocked: (locked) => set({ isLocked: locked }),
+
   setUpdateInfo: (info) => set({ updateInfo: info, updateError: null }),
   setIsDownloading: (isDownloading) => set({ isDownloading: isDownloading }),
   setDownloadProgress: (progress) => set({ downloadProgress: progress }),
@@ -74,6 +81,7 @@ export const useAppStore = create<AppState>((set) => ({
     myWxid: null,
     isLoading: false,
     loadingText: '',
+    isLocked: false,
     updateInfo: null,
     isDownloading: false,
     downloadProgress: { percent: 0 },

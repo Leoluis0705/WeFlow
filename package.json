@@ -7,7 +7,7 @@
   "//": "二改不应改变此处的作者与应用信息",
   "scripts": {
     "postinstall": "echo 'No native modules to rebuild'",
-    "rebuild": "echo 'No native modules to rebuild'",
+    "rebuild": "electron-rebuild",
     "dev": "vite",
     "build": "tsc && vite build && electron-builder",
     "preview": "vite preview",
@@ -15,6 +15,7 @@
     "electron:build": "npm run build"
   },
   "dependencies": {
+    "@nodert-win10-rs4/windows.security.credentials.ui": "^0.4.4",
     "better-sqlite3": "^12.5.0",
     "echarts": "^5.5.1",
     "echarts-for-react": "^3.0.2",

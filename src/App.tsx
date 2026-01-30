@@ -12,7 +12,6 @@ import AnnualReportPage from './pages/AnnualReportPage'
 import AnnualReportWindow from './pages/AnnualReportWindow'
 import AgreementPage from './pages/AgreementPage'
 import GroupAnalyticsPage from './pages/GroupAnalyticsPage'
-import DataManagementPage from './pages/DataManagementPage'
 import SettingsPage from './pages/SettingsPage'
 import ExportPage from './pages/ExportPage'
 import VideoWindow from './pages/VideoWindow'
@@ -43,7 +42,9 @@ function App() {
     setDownloadProgress,
     showUpdateDialog,
     setShowUpdateDialog,
-    setUpdateError
+    setUpdateError,
+    isLocked,
+    setLocked
   } = useAppStore()
 
   const { currentTheme, themeMode, setTheme, setThemeMode } = useThemeStore()
@@ -54,8 +55,10 @@ function App() {
   const [themeHydrated, setThemeHydrated] = useState(false)
 
   // 锁定状态
-  const [isLocked, setIsLocked] = useState(false)
-  const [lockAvatar, setLockAvatar] = useState<string | undefined>(undefined)
+  // const [isLocked, setIsLocked] = useState(false) // Moved to store
+  const [lockAvatar, setLockAvatar] = useState<string | undefined>(
+    localStorage.getItem('app_lock_avatar') || undefined
+  )
   const [lockUseHello, setLockUseHello] = useState(false)
 
   // 协议同意状态
@@ -174,7 +177,7 @@ function App() {
         setShowUpdateDialog(true)
       }
     })
-    const removeProgressListener = window.electronAPI.app.onDownloadProgress?.((progress) => {
+    const removeProgressListener = window.electronAPI.app.onDownloadProgress?.((progress: any) => {
       setDownloadProgress(progress)
     })
     return () => {
@@ -271,12 +274,13 @@ function App() {
 
       if (enabled) {
         setLockUseHello(useHello)
-        setIsLocked(true)
+        setLocked(true)
         // 尝试获取头像
         try {
           const result = await window.electronAPI.chat.getMyAvatarUrl()
           if (result && result.success && result.avatarUrl) {
             setLockAvatar(result.avatarUrl)
+            localStorage.setItem('app_lock_avatar', result.avatarUrl)
           }
         } catch (e) {
           console.error('获取锁屏头像失败', e)
@@ -310,7 +314,7 @@ function App() {
     <div className="app-container">
       {isLocked && (
         <LockScreen
-          onUnlock={() => setIsLocked(false)}
+          onUnlock={() => setLocked(false)}
           avatar={lockAvatar}
           useHello={lockUseHello}
         />
@@ -394,7 +398,7 @@ function App() {
               <Route path="/group-analytics" element={<GroupAnalyticsPage />} />
               <Route path="/annual-report" element={<AnnualReportPage />} />
               <Route path="/annual-report/view" element={<AnnualReportWindow />} />
-              <Route path="/data-management" element={<DataManagementPage />} />
+
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/export" element={<ExportPage />} />
               <Route path="/sns" element={<SnsPage />} />

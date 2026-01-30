@@ -57,6 +57,7 @@ export class WcdbCore {
   private wcdbGetDbStatus: any = null
   private wcdbGetVoiceData: any = null
   private wcdbGetSnsTimeline: any = null
+  private wcdbVerifyUser: any = null
   private avatarUrlCache: Map<string, { url?: string; updatedAt: number }> = new Map()
   private readonly avatarCacheTtlMs = 10 * 60 * 1000
   private logTimer: NodeJS.Timeout | null = null
@@ -247,7 +248,7 @@ export class WcdbCore {
       // InitProtection (Added for security)
       try {
         this.wcdbInitProtection = this.lib.func('bool InitProtection(const char* resourcePath)')
-        
+
         // 尝试多个可能的资源路径
         const resourcePaths = [
           dllDir,  // DLL 所在目录
@@ -255,28 +256,28 @@ export class WcdbCore {
           this.resourcesPath,  // 配置的资源路径
           join(process.cwd(), 'resources')  // 开发环境
         ].filter(Boolean)
-        
+
         let protectionOk = false
         for (const resPath of resourcePaths) {
           try {
-            console.log(`[WCDB] 尝试 InitProtection: ${resPath}`)
+            // console.log(`[WCDB] 尝试 InitProtection: ${resPath}`)
             protectionOk = this.wcdbInitProtection(resPath)
             if (protectionOk) {
-              console.log(`[WCDB] InitProtection 成功: ${resPath}`)
+              // console.log(`[WCDB] InitProtection 成功: ${resPath}`)
               break
             }
           } catch (e) {
-            console.warn(`[WCDB] InitProtection 失败 (${resPath}):`, e)
+            // console.warn(`[WCDB] InitProtection 失败 (${resPath}):`, e)
           }
         }
-        
+
         if (!protectionOk) {
-          console.warn('[WCDB] Core security check failed - 继续运行但可能不稳定')
-          this.writeLog('InitProtection 失败，继续运行')
+          // console.warn('[WCDB] Core security check failed - 继续运行但可能不稳定')
+          // this.writeLog('InitProtection 失败，继续运行')
           // 不返回 false，允许继续运行
         }
       } catch (e) {
-        console.warn('InitProtection symbol not found:', e)
+        // console.warn('InitProtection symbol not found:', e)
       }
 
       // 定义类型
@@ -428,6 +429,13 @@ export class WcdbCore {
         this.wcdbGetSnsTimeline = this.lib.func('int32 wcdb_get_sns_timeline(int64 handle, int32 limit, int32 offset, const char* username, const char* keyword, int32 startTime, int32 endTime, _Out_ void** outJson)')
       } catch {
         this.wcdbGetSnsTimeline = null
+      }
+
+      // void VerifyUser(int64_t hwnd_ptr, const char* message, char* out_result, int max_len)
+      try {
+        this.wcdbVerifyUser = this.lib.func('void VerifyUser(int64 hwnd, const char* message, _Out_ char* outResult, int maxLen)')
+      } catch {
+        this.wcdbVerifyUser = null
       }
 
       // 初始化
@@ -1432,6 +1440,39 @@ export class WcdbCore {
     } catch (e) {
       return { success: false, error: String(e) }
     }
+  }
+
+  /**
+   * 验证 Windows Hello
+   */
+  async verifyUser(message: string, hwnd?: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.initialized) {
+      const initOk = await this.initialize()
+      if (!initOk) return { success: false, error: 'WCDB 初始化失败' }
+    }
+
+    if (!this.wcdbVerifyUser) {
+      return { success: false, error: 'Binding not found: VerifyUser' }
+    }
+
+    return new Promise((resolve) => {
+      try {
+        // Allocate buffer for result JSON
+        const maxLen = 1024
+        const outBuf = Buffer.alloc(maxLen)
+
+        // Call native function
+        const hwndVal = hwnd ? BigInt(hwnd) : BigInt(0)
+        this.wcdbVerifyUser(hwndVal, message || '', outBuf, maxLen)
+
+        // Parse result
+        const jsonStr = this.koffi.decode(outBuf, 'char', -1)
+        const result = JSON.parse(jsonStr)
+        resolve(result)
+      } catch (e) {
+        resolve({ success: false, error: String(e) })
+      }
+    })
   }
 
   async getSnsTimeline(limit: number, offset: number, usernames?: string[], keyword?: string, startTime?: number, endTime?: number): Promise<{ success: boolean; timeline?: any[]; error?: string }> {

@@ -1,11 +1,19 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, Users, FileText, Database, Settings, ChevronLeft, ChevronRight, Download, Bot, Aperture, UserCircle } from 'lucide-react'
+import { Home, MessageSquare, BarChart3, Users, FileText, Database, Settings, ChevronLeft, ChevronRight, Download, Bot, Aperture, UserCircle, Lock } from 'lucide-react'
+import { useAppStore } from '../stores/appStore'
+import * as configService from '../services/config'
 import './Sidebar.scss'
 
 function Sidebar() {
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(false)
+  const [authEnabled, setAuthEnabled] = useState(false)
+  const setLocked = useAppStore(state => state.setLocked)
+
+  useEffect(() => {
+    configService.getAuthEnabled().then(setAuthEnabled)
+  }, [])
 
   const isActive = (path: string) => {
     return location.pathname === path || location.pathname.startsWith(`${path}/`)
@@ -94,18 +102,21 @@ function Sidebar() {
           <span className="nav-label">导出</span>
         </NavLink>
 
-        {/* 数据管理 */}
-        <NavLink
-          to="/data-management"
-          className={`nav-item ${isActive('/data-management') ? 'active' : ''}`}
-          title={collapsed ? '数据管理' : undefined}
-        >
-          <span className="nav-icon"><Database size={20} /></span>
-          <span className="nav-label">数据管理</span>
-        </NavLink>
+
       </nav>
 
       <div className="sidebar-footer">
+        {authEnabled && (
+          <button
+            className="nav-item"
+            onClick={() => setLocked(true)}
+            title={collapsed ? '锁定' : undefined}
+          >
+            <span className="nav-icon"><Lock size={20} /></span>
+            <span className="nav-label">锁定</span>
+          </button>
+        )}
+
         <NavLink
           to="/settings"
           className={`nav-item ${isActive('/settings') ? 'active' : ''}`}

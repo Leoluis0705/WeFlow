@@ -5,7 +5,6 @@ import ReactECharts from 'echarts-for-react'
 import { useAnalyticsStore } from '../stores/analyticsStore'
 import { useThemeStore } from '../stores/themeStore'
 import './AnalyticsPage.scss'
-import './DataManagementPage.scss'
 import { Avatar } from '../components/Avatar'
 
 function AnalyticsPage() {

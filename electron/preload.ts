@@ -9,6 +9,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clear: () => ipcRenderer.invoke('config:clear')
   },
 
+  // 认证
+  auth: {
+    hello: (message?: string) => ipcRenderer.invoke('auth:hello', message)
+  },
+
 
   // 对话框
   dialog: {

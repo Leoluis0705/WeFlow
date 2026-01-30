@@ -20,6 +20,7 @@ import { voiceTranscribeService } from './services/voiceTranscribeService'
 import { videoService } from './services/videoService'
 import { snsService } from './services/snsService'
 import { contactExportService } from './services/contactExportService'
+import { windowsHelloService } from './services/windowsHelloService'
 
 
 // 配置自动更新
@@ -796,6 +797,17 @@ function registerIpcHandlers() {
   ipcMain.handle('image:preload', async (_, payloads: Array<{ sessionId?: string; imageMd5?: string; imageDatName?: string }>) => {
     imagePreloadService.enqueue(payloads || [])
     return true
+  })
+
+  // Windows Hello
+  ipcMain.handle('auth:hello', async (event, message?: string) => {
+    // 无论哪个窗口调用，都尝试强制附着到主窗口，确保体验一致
+    // 如果主窗口不存在（极其罕见），则回退到调用者窗口
+    const targetWin = (mainWindow && !mainWindow.isDestroyed())
+      ? mainWindow
+      : (BrowserWindow.fromWebContents(event.sender) || undefined)
+
+    return windowsHelloService.verify(message, targetWin)
   })
 
   // 导出相关

@@ -369,6 +369,13 @@ export class WcdbService {
     return this.callWorker('getSnsTimeline', { limit, offset, usernames, keyword, startTime, endTime })
   }
 
+  /**
+   * 验证 Windows Hello
+   */
+  async verifyUser(message: string, hwnd?: string): Promise<{ success: boolean; error?: string }> {
+    return this.callWorker('verifyUser', { message, hwnd })
+  }
+
 }
 
 export const wcdbService = new WcdbService()
