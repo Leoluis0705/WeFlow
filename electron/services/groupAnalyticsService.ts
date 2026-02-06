@@ -105,17 +105,164 @@ class GroupAnalyticsService {
   /**
    * 从 DLL 获取群成员的群昵称
    */
-  private async getGroupNicknamesForRoom(chatroomId: string): Promise<Map<string, string>> {
+  private async getGroupNicknamesForRoom(chatroomId: string, candidates: string[] = []): Promise<Map<string, string>> {
     try {
-      const result = await wcdbService.getGroupNicknames(chatroomId)
-      if (result.success && result.nicknames) {
-        return new Map(Object.entries(result.nicknames))
+      const escapedChatroomId = chatroomId.replace(/'/g, "''")
+      const sql = `SELECT ext_buffer FROM chat_room WHERE username='${escapedChatroomId}' LIMIT 1`
+      const result = await wcdbService.execQuery('contact', null, sql)
+      if (!result.success || !result.rows || result.rows.length === 0) {
+        return new Map<string, string>()
       }
-      return new Map<string, string>()
+
+      const extBuffer = this.decodeExtBuffer((result.rows[0] as any).ext_buffer)
+      if (!extBuffer) return new Map<string, string>()
+      return this.parseGroupNicknamesFromExtBuffer(extBuffer, candidates)
     } catch (e) {
       console.error('getGroupNicknamesForRoom error:', e)
       return new Map<string, string>()
     }
+  }
+
+  private looksLikeHex(s: string): boolean {
+    if (s.length % 2 !== 0) return false
+    return /^[0-9a-fA-F]+$/.test(s)
+  }
+
+  private looksLikeBase64(s: string): boolean {
+    if (s.length % 4 !== 0) return false
+    return /^[A-Za-z0-9+/=]+$/.test(s)
+  }
+
+  private decodeExtBuffer(value: unknown): Buffer | null {
+    if (!value) return null
+    if (Buffer.isBuffer(value)) return value
+    if (value instanceof Uint8Array) return Buffer.from(value)
+
+    if (typeof value === 'string') {
+      const raw = value.trim()
+      if (!raw) return null
+
+      if (this.looksLikeHex(raw)) {
+        try { return Buffer.from(raw, 'hex') } catch { }
+      }
+      if (this.looksLikeBase64(raw)) {
+        try { return Buffer.from(raw, 'base64') } catch { }
+      }
+
+      try { return Buffer.from(raw, 'hex') } catch { }
+      try { return Buffer.from(raw, 'base64') } catch { }
+      try { return Buffer.from(raw, 'utf8') } catch { }
+      return null
+    }
+
+    return null
+  }
+
+  private readVarint(buffer: Buffer, offset: number, limit: number = buffer.length): { value: number; next: number } | null {
+    let value = 0
+    let shift = 0
+    let pos = offset
+    while (pos < limit && shift <= 53) {
+      const byte = buffer[pos]
+      value += (byte & 0x7f) * Math.pow(2, shift)
+      pos += 1
+      if ((byte & 0x80) === 0) return { value, next: pos }
+      shift += 7
+    }
+    return null
+  }
+
+  private isLikelyMemberId(value: string): boolean {
+    const id = String(value || '').trim()
+    if (!id) return false
+    if (id.includes('@chatroom')) return false
+    if (id.length < 4 || id.length > 80) return false
+    return /^[A-Za-z][A-Za-z0-9_.@-]*$/.test(id)
+  }
+
+  private isLikelyNickname(value: string): boolean {
+    const cleaned = this.normalizeGroupNickname(value)
+    if (!cleaned) return false
+    if (/^wxid_[a-z0-9_]+$/i.test(cleaned)) return false
+    if (cleaned.includes('@chatroom')) return false
+    if (!/[\u4E00-\u9FFF\u3400-\u4DBF\w]/.test(cleaned)) return false
+    if (cleaned.length === 1) {
+      const code = cleaned.charCodeAt(0)
+      const isCjk = code >= 0x3400 && code <= 0x9fff
+      if (!isCjk) return false
+    }
+    return true
+  }
+
+  private parseGroupNicknamesFromExtBuffer(buffer: Buffer, candidates: string[] = []): Map<string, string> {
+    const nicknameMap = new Map<string, string>()
+    if (!buffer || buffer.length === 0) return nicknameMap
+
+    try {
+      const candidateSet = new Set(this.buildIdCandidates(candidates).map((id) => id.toLowerCase()))
+
+      for (let i = 0; i < buffer.length - 2; i += 1) {
+        if (buffer[i] !== 0x0a) continue
+
+        const idLenInfo = this.readVarint(buffer, i + 1)
+        if (!idLenInfo) continue
+        const idLen = idLenInfo.value
+        if (!Number.isFinite(idLen) || idLen <= 0 || idLen > 96) continue
+
+        const idStart = idLenInfo.next
+        const idEnd = idStart + idLen
+        if (idEnd > buffer.length) continue
+
+        const memberId = buffer.toString('utf8', idStart, idEnd).trim()
+        if (!this.isLikelyMemberId(memberId)) continue
+
+        const memberIdLower = memberId.toLowerCase()
+        if (candidateSet.size > 0 && !candidateSet.has(memberIdLower)) {
+          i = idEnd - 1
+          continue
+        }
+
+        const cursor = idEnd
+        if (cursor >= buffer.length || buffer[cursor] !== 0x12) {
+          i = idEnd - 1
+          continue
+        }
+
+        const nickLenInfo = this.readVarint(buffer, cursor + 1)
+        if (!nickLenInfo) {
+          i = idEnd - 1
+          continue
+        }
+
+        const nickLen = nickLenInfo.value
+        if (!Number.isFinite(nickLen) || nickLen <= 0 || nickLen > 128) {
+          i = idEnd - 1
+          continue
+        }
+
+        const nickStart = nickLenInfo.next
+        const nickEnd = nickStart + nickLen
+        if (nickEnd > buffer.length) {
+          i = idEnd - 1
+          continue
+        }
+
+        const rawNick = buffer.toString('utf8', nickStart, nickEnd)
+        const nickname = this.normalizeGroupNickname(rawNick.replace(/[\x00-\x1F\x7F]/g, '').trim())
+        if (!this.isLikelyNickname(nickname)) {
+          i = nickEnd - 1
+          continue
+        }
+
+        if (!nicknameMap.has(memberId)) nicknameMap.set(memberId, nickname)
+        if (!nicknameMap.has(memberIdLower)) nicknameMap.set(memberIdLower, nickname)
+        i = nickEnd - 1
+      }
+    } catch (e) {
+      console.error('Failed to parse chat_room.ext_buffer:', e)
+    }
+
+    return nicknameMap
   }
 
   private escapeCsvValue(value: string): string {
@@ -127,12 +274,52 @@ class GroupAnalyticsService {
     return str
   }
 
-  private normalizeGroupNickname(value: string, wxid: string, fallback: string): string {
+  private normalizeGroupNickname(value: string): string {
     const trimmed = (value || '').trim()
-    if (!trimmed) return fallback
-    if (/^["'@]+$/.test(trimmed)) return fallback
-    if (trimmed.toLowerCase() === (wxid || '').toLowerCase()) return fallback
+    if (!trimmed) return ''
+    if (/^["'@]+$/.test(trimmed)) return ''
     return trimmed
+  }
+
+  private buildIdCandidates(values: Array<string | undefined | null>): string[] {
+    const set = new Set<string>()
+    for (const rawValue of values) {
+      const raw = String(rawValue || '').trim()
+      if (!raw) continue
+      set.add(raw)
+      const cleaned = this.cleanAccountDirName(raw)
+      if (cleaned && cleaned !== raw) {
+        set.add(cleaned)
+      }
+    }
+    return Array.from(set)
+  }
+
+  private resolveGroupNicknameByCandidates(groupNicknames: Map<string, string>, candidates: string[]): string {
+    const idCandidates = this.buildIdCandidates(candidates)
+    if (idCandidates.length === 0) return ''
+
+    for (const id of idCandidates) {
+      const exact = this.normalizeGroupNickname(groupNicknames.get(id) || '')
+      if (exact) return exact
+    }
+
+    for (const id of idCandidates) {
+      const lower = id.toLowerCase()
+      let found = ''
+      let matched = 0
+      for (const [key, value] of groupNicknames.entries()) {
+        if (String(key || '').toLowerCase() !== lower) continue
+        const normalized = this.normalizeGroupNickname(value || '')
+        if (!normalized) continue
+        found = normalized
+        matched += 1
+        if (matched > 1) return ''
+      }
+      if (matched === 1 && found) return found
+    }
+
+    return ''
   }
 
   private sanitizeWorksheetName(name: string): string {
@@ -219,15 +406,24 @@ class GroupAnalyticsService {
         return { success: false, error: result.error || '获取群成员失败' }
       }
 
-      const members = result.members as { username: string; avatarUrl?: string }[]
+      const members = result.members as Array<{
+        username: string
+        avatarUrl?: string
+        originalName?: string
+      }>
       const usernames = members.map((m) => m.username).filter(Boolean)
 
-      const [displayNames, groupNicknames] = await Promise.all([
-        wcdbService.getDisplayNames(usernames),
-        this.getGroupNicknamesForRoom(chatroomId)
-      ])
+      const displayNamesPromise = wcdbService.getDisplayNames(usernames)
 
-      const contactMap = new Map<string, { remark?: string; nickName?: string; alias?: string }>()
+      const contactMap = new Map<string, {
+        remark?: string
+        nickName?: string
+        alias?: string
+        username?: string
+        userName?: string
+        encryptUsername?: string
+        encryptUserName?: string
+      }>()
       const concurrency = 6
       await this.parallelLimit(usernames, concurrency, async (username) => {
         const contactResult = await wcdbService.getContact(username)
@@ -236,12 +432,28 @@ class GroupAnalyticsService {
           contactMap.set(username, {
             remark: contact.remark || '',
             nickName: contact.nickName || contact.nick_name || '',
-            alias: contact.alias || ''
+            alias: contact.alias || '',
+            username: contact.username || '',
+            userName: contact.userName || contact.user_name || '',
+            encryptUsername: contact.encryptUsername || contact.encrypt_username || '',
+            encryptUserName: contact.encryptUserName || ''
           })
         } else {
           contactMap.set(username, { remark: '', nickName: '', alias: '' })
         }
       })
+
+      const displayNames = await displayNamesPromise
+      const nicknameCandidates = this.buildIdCandidates([
+        ...members.map((m) => m.username),
+        ...members.map((m) => m.originalName),
+        ...Array.from(contactMap.values()).map((c) => c?.username),
+        ...Array.from(contactMap.values()).map((c) => c?.userName),
+        ...Array.from(contactMap.values()).map((c) => c?.encryptUsername),
+        ...Array.from(contactMap.values()).map((c) => c?.encryptUserName),
+        ...Array.from(contactMap.values()).map((c) => c?.alias)
+      ])
+      const groupNicknames = await this.getGroupNicknamesForRoom(chatroomId, nicknameCandidates)
 
       const myWxid = this.cleanAccountDirName(this.configService.get('myWxid') || '')
       const data: GroupMember[] = members.map((m) => {
@@ -251,13 +463,20 @@ class GroupAnalyticsService {
         const nickname = contact?.nickName || ''
         const remark = contact?.remark || ''
         const alias = contact?.alias || ''
-        const rawGroupNickname = groupNicknames.get(wxid.toLowerCase()) || ''
         const normalizedWxid = this.cleanAccountDirName(wxid)
-        const groupNickname = this.normalizeGroupNickname(
-          rawGroupNickname,
-          normalizedWxid === myWxid ? myWxid : wxid,
-          ''
-        )
+        const lookupCandidates = this.buildIdCandidates([
+          wxid,
+          m.originalName,
+          contact?.username,
+          contact?.userName,
+          contact?.encryptUsername,
+          contact?.encryptUserName,
+          alias
+        ])
+        if (normalizedWxid === myWxid) {
+          lookupCandidates.push(myWxid)
+        }
+        const groupNickname = this.resolveGroupNicknameByCandidates(groupNicknames, lookupCandidates)
 
         return {
           username: wxid,
@@ -418,18 +637,27 @@ class GroupAnalyticsService {
         return { success: false, error: membersResult.error || '获取群成员失败' }
       }
 
-      const members = membersResult.members as { username: string; avatarUrl?: string }[]
+      const members = membersResult.members as Array<{
+        username: string
+        avatarUrl?: string
+        originalName?: string
+      }>
       if (members.length === 0) {
         return { success: false, error: '群成员为空' }
       }
 
       const usernames = members.map((m) => m.username).filter(Boolean)
-      const [displayNames, groupNicknames] = await Promise.all([
-        wcdbService.getDisplayNames(usernames),
-        this.getGroupNicknamesForRoom(chatroomId)
-      ])
+      const displayNamesPromise = wcdbService.getDisplayNames(usernames)
 
-      const contactMap = new Map<string, { remark?: string; nickName?: string; alias?: string }>()
+      const contactMap = new Map<string, {
+        remark?: string
+        nickName?: string
+        alias?: string
+        username?: string
+        userName?: string
+        encryptUsername?: string
+        encryptUserName?: string
+      }>()
       const concurrency = 6
       await this.parallelLimit(usernames, concurrency, async (username) => {
         const result = await wcdbService.getContact(username)
@@ -438,7 +666,11 @@ class GroupAnalyticsService {
           contactMap.set(username, {
             remark: contact.remark || '',
             nickName: contact.nickName || contact.nick_name || '',
-            alias: contact.alias || ''
+            alias: contact.alias || '',
+            username: contact.username || '',
+            userName: contact.userName || contact.user_name || '',
+            encryptUsername: contact.encryptUsername || contact.encrypt_username || '',
+            encryptUserName: contact.encryptUserName || ''
           })
         } else {
           contactMap.set(username, { remark: '', nickName: '', alias: '' })
@@ -453,6 +685,18 @@ class GroupAnalyticsService {
       const rows: string[][] = [infoTitleRow, infoRow, metaRow, header]
       const myWxid = this.cleanAccountDirName(this.configService.get('myWxid') || '')
 
+      const displayNames = await displayNamesPromise
+      const nicknameCandidates = this.buildIdCandidates([
+        ...members.map((m) => m.username),
+        ...members.map((m) => m.originalName),
+        ...Array.from(contactMap.values()).map((c) => c?.username),
+        ...Array.from(contactMap.values()).map((c) => c?.userName),
+        ...Array.from(contactMap.values()).map((c) => c?.encryptUsername),
+        ...Array.from(contactMap.values()).map((c) => c?.encryptUserName),
+        ...Array.from(contactMap.values()).map((c) => c?.alias)
+      ])
+      const groupNicknames = await this.getGroupNicknamesForRoom(chatroomId, nicknameCandidates)
+
       for (const member of members) {
         const wxid = member.username
         const normalizedWxid = this.cleanAccountDirName(wxid || '')
@@ -460,13 +704,20 @@ class GroupAnalyticsService {
         const fallbackName = displayNames.success && displayNames.map ? (displayNames.map[wxid] || '') : ''
         const nickName = contact?.nickName || fallbackName || ''
         const remark = contact?.remark || ''
-        const rawGroupNickname = groupNicknames.get(wxid.toLowerCase()) || ''
         const alias = contact?.alias || ''
-        const groupNickname = this.normalizeGroupNickname(
-          rawGroupNickname,
-          normalizedWxid === myWxid ? myWxid : wxid,
-          ''
-        )
+        const lookupCandidates = this.buildIdCandidates([
+          wxid,
+          member.originalName,
+          contact?.username,
+          contact?.userName,
+          contact?.encryptUsername,
+          contact?.encryptUserName,
+          alias
+        ])
+        if (normalizedWxid === myWxid) {
+          lookupCandidates.push(myWxid)
+        }
+        const groupNickname = this.resolveGroupNicknameByCandidates(groupNicknames, lookupCandidates)
 
         rows.push([nickName, remark, groupNickname, wxid, alias])
       }
