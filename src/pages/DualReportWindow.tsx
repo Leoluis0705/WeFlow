@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { Clock, Zap, MessageCircle, MessageSquare, Type, Image as ImageIcon, Mic, Smile } from 'lucide-react'
 import ReportHeatmap from '../components/ReportHeatmap'
 import ReportWordCloud from '../components/ReportWordCloud'
 import './AnnualReportWindow.scss'
@@ -10,6 +9,9 @@ interface DualReportMessage {
   isSentByMe: boolean
   createTime: number
   createTimeStr: string
+  localType?: number
+  emojiMd5?: string
+  emojiCdnUrl?: string
 }
 
 interface DualReportData {
@@ -25,6 +27,9 @@ interface DualReportData {
     content: string
     isSentByMe: boolean
     senderUsername?: string
+    localType?: number
+    emojiMd5?: string
+    emojiCdnUrl?: string
   } | null
   firstChatMessages?: DualReportMessage[]
   yearFirstChat?: {
@@ -34,6 +39,9 @@ interface DualReportData {
     isSentByMe: boolean
     friendName: string
     firstThreeMessages: DualReportMessage[]
+    localType?: number
+    emojiMd5?: string
+    emojiCdnUrl?: string
   } | null
   stats: {
     totalMessages: number
@@ -51,7 +59,7 @@ interface DualReportData {
   topPhrases: Array<{ phrase: string; count: number }>
   heatmap?: number[][]
   initiative?: { initiated: number; received: number }
-  response?: { avg: number; fastest: number; count: number }
+  response?: { avg: number; fastest: number; slowest: number; count: number }
   monthly?: Record<string, number>
   streak?: { days: number; startDate: string; endDate: string }
 }
@@ -188,11 +196,11 @@ function DualReportWindow() {
   const initiatedPercent = initiativeTotal > 0 ? (reportData.initiative!.initiated / initiativeTotal) * 100 : 0
   const receivedPercent = initiativeTotal > 0 ? (reportData.initiative!.received / initiativeTotal) * 100 : 0
   const statItems = [
-    { label: '总消息数', value: stats.totalMessages, icon: MessageSquare, color: '#07C160' },
-    { label: '总字数', value: stats.totalWords, icon: Type, color: '#10AEFF' },
-    { label: '图片', value: stats.imageCount, icon: ImageIcon, color: '#FFC300' },
-    { label: '语音', value: stats.voiceCount, icon: Mic, color: '#FA5151' },
-    { label: '表情', value: stats.emojiCount, icon: Smile, color: '#FA9D3B' },
+    { label: '总消息数', value: stats.totalMessages, color: '#07C160' },
+    { label: '总字数', value: stats.totalWords, color: '#10AEFF' },
+    { label: '图片', value: stats.imageCount, color: '#FFC300' },
+    { label: '语音', value: stats.voiceCount, color: '#FA5151' },
+    { label: '表情', value: stats.emojiCount, color: '#FA9D3B' },
   ]
 
   const decodeEntities = (text: string) => (
@@ -203,6 +211,20 @@ function DualReportWindow() {
       .replace(/&quot;/g, '"')
       .replace(/&apos;/g, "'")
   )
+
+  const filterDisplayMessages = (messages: DualReportMessage[], maxActual: number = 3) => {
+    let actualCount = 0
+    const result: DualReportMessage[] = []
+    for (const msg of messages) {
+      const isSystem = msg.localType === 10000 || msg.localType === 10002
+      if (!isSystem) {
+        if (actualCount >= maxActual) break
+        actualCount++
+      }
+      result.push(msg)
+    }
+    return result
+  }
 
   const stripCdata = (text: string) => text.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
   const compactMessageText = (text: string) => (
@@ -225,7 +247,18 @@ function DualReportWindow() {
     return ''
   }
 
-  const formatMessageContent = (content?: string) => {
+  const formatMessageContent = (content?: string, localType?: number) => {
+    const isSystemMsg = localType === 10000 || localType === 10002
+    if (!isSystemMsg) {
+      if (localType === 3) return '[图片]'
+      if (localType === 34) return '[语音]'
+      if (localType === 43) return '[视频]'
+      if (localType === 47) return '[表情]'
+      if (localType === 42) return '[名片]'
+      if (localType === 48) return '[位置]'
+      if (localType === 49) return '[链接/文件]'
+    }
+
     const raw = compactMessageText(String(content || '').trim())
     if (!raw) return '（空）'
 
@@ -251,7 +284,25 @@ function DualReportWindow() {
       return compactMessageText(decodeEntities(stripped))
     }
 
-    return '（多媒体/卡片消息）'
+    return '[多媒体消息]'
+  }
+
+  const ReportMessageItem = ({ msg }: { msg: DualReportMessage }) => {
+    if (msg.localType === 47 && (msg.emojiMd5 || msg.emojiCdnUrl)) {
+      const emojiUrl = msg.emojiCdnUrl || (msg.emojiMd5 ? `https://emoji.qpic.cn/wx_emoji/${msg.emojiMd5}/0` : '')
+      if (emojiUrl) {
+        return (
+          <div className="report-emoji-container">
+            <img src={emojiUrl} alt="表情" className="report-emoji-img" onError={(e) => {
+              (e.target as HTMLImageElement).style.display = 'none';
+              (e.target as HTMLImageElement).nextElementSibling?.removeAttribute('style');
+            }} />
+            <span style={{ display: 'none' }}>[表情]</span>
+          </div>
+        )
+      }
+    }
+    return <span>{formatMessageContent(msg.content, msg.localType)}</span>
   }
   const formatFullDate = (timestamp: number) => {
     const d = new Date(timestamp)
@@ -300,6 +351,50 @@ function DualReportWindow() {
     return <div className="scene-avatar fallback">{getSceneAvatarFallback(isSentByMe)}</div>
   }
 
+  const renderMessageList = (messages: DualReportMessage[]) => {
+    const displayMsgs = filterDisplayMessages(messages)
+    let lastTime = 0
+    const TIME_THRESHOLD = 5 * 60 * 1000 // 5 分钟
+
+    return displayMsgs.map((msg, idx) => {
+      const isSystem = msg.localType === 10000 || msg.localType === 10002
+      const showTime = idx === 0 || (msg.createTime - lastTime > TIME_THRESHOLD)
+      lastTime = msg.createTime
+
+      if (isSystem) {
+        return (
+          <div key={idx} className="scene-message system">
+            {showTime && (
+              <div className="scene-meta">
+                {formatFullDate(msg.createTime).split(' ')[1]}
+              </div>
+            )}
+            <div className="system-msg-content">
+              <ReportMessageItem msg={msg} />
+            </div>
+          </div>
+        )
+      }
+      return (
+        <div key={idx} className={`scene-message ${msg.isSentByMe ? 'sent' : 'received'}`}>
+          {showTime && (
+            <div className="scene-meta">
+              {formatFullDate(msg.createTime).split(' ')[1]}
+            </div>
+          )}
+          <div className="scene-body">
+            {renderSceneAvatar(msg.isSentByMe)}
+            <div className="scene-content-wrapper">
+              <div className={`scene-bubble ${msg.localType === 47 ? 'no-bubble' : ''}`}>
+                <div className="scene-content"><ReportMessageItem msg={msg} /></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )
+    })
+  }
+
   return (
     <div className="annual-report-window dual-report-window">
       <div className="drag-region" />
@@ -335,24 +430,12 @@ function DualReportWindow() {
                 <div className="scene-subtitle">{formatFullDate(firstChat.createTime).split(' ')[0]}</div>
                 {firstChatMessages.length > 0 ? (
                   <div className="scene-messages">
-                    {firstChatMessages.map((msg, idx) => (
-                      <div key={idx} className={`scene-message ${msg.isSentByMe ? 'sent' : 'received'}`}>
-                        {renderSceneAvatar(msg.isSentByMe)}
-                        <div className="scene-content-wrapper">
-                          <div className="scene-meta">
-                            {formatFullDate(msg.createTime).split(' ')[1]}
-                          </div>
-                          <div className="scene-bubble">
-                            <div className="scene-content">{formatMessageContent(msg.content)}</div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
+                    {renderMessageList(firstChatMessages)}
                   </div>
                 ) : (
                   <div className="hero-desc" style={{ textAlign: 'center' }}>暂无消息详情</div>
                 )}
-                <div className="scene-footer" style={{ marginTop: '20px', textAlign: 'center', fontSize: '12px', opacity: 0.6 }}>
+                <div className="scene-footer" style={{ marginTop: '20px', textAlign: 'center', fontSize: '14px', opacity: 0.6 }}>
                   距离今天已经 {daysSince} 天
                 </div>
               </div>
@@ -361,7 +444,7 @@ function DualReportWindow() {
             )}
           </section>
 
-          {yearFirstChat ? (
+          {yearFirstChat && (!firstChat || yearFirstChat.createTime !== firstChat.createTime) ? (
             <section className="section">
               <div className="label-text">第一段对话</div>
               <h2 className="hero-title">
@@ -371,19 +454,7 @@ function DualReportWindow() {
                 <div className="scene-title">久别重逢</div>
                 <div className="scene-subtitle">{formatFullDate(yearFirstChat.createTime).split(' ')[0]}</div>
                 <div className="scene-messages">
-                  {yearFirstChat.firstThreeMessages.map((msg, idx) => (
-                    <div key={idx} className={`scene-message ${msg.isSentByMe ? 'sent' : 'received'}`}>
-                      {renderSceneAvatar(msg.isSentByMe)}
-                      <div className="scene-content-wrapper">
-                        <div className="scene-meta">
-                          {formatFullDate(msg.createTime).split(' ')[1]}
-                        </div>
-                        <div className="scene-bubble">
-                          <div className="scene-content">{formatMessageContent(msg.content)}</div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                  {renderMessageList(yearFirstChat.firstThreeMessages)}
                 </div>
               </div>
             </section>
@@ -395,7 +466,7 @@ function DualReportWindow() {
               <h2 className="hero-title">作息规律</h2>
               {mostActive && (
                 <p className="hero-desc active-time dual-active-time">
-                  {'\u5728'} <span className="hl">{mostActive.weekday} {String(mostActive.hour).padStart(2, '0')}:00</span> {'\u6700\u6d3b\u8dc3\uff08'}{mostActive.value}{'\u6761\uff09'}
+                  在 <span className="hl">{mostActive.weekday} {String(mostActive.hour).padStart(2, '0')}:00</span> 最活跃（{mostActive.value}条）
                 </p>
               )}
               <ReportHeatmap data={reportData.heatmap} />
@@ -407,34 +478,31 @@ function DualReportWindow() {
               <div className="label-text">主动性</div>
               <h2 className="hero-title">情感的天平</h2>
               <div className="initiative-container">
-                <div className="initiative-desc">
-                  {reportData.initiative.initiated > reportData.initiative.received ? '每一个话题都是你对TA的在意' : 'TA总是那个率先打破沉默的人'}
-                </div>
                 <div className="initiative-bar-wrapper">
                   <div className="initiative-side">
                     <div className="avatar-placeholder">
-                      {reportData.selfAvatarUrl ? <img src={reportData.selfAvatarUrl} alt="me-avatar" /> : '\u6211'}
+                      {reportData.selfAvatarUrl ? <img src={reportData.selfAvatarUrl} alt="me-avatar" /> : '我'}
                     </div>
-                    <div className="count">{reportData.initiative.initiated}{'\u6b21'}</div>
+                    <div className="count">{reportData.initiative.initiated}次</div>
                     <div className="percent">{initiatedPercent.toFixed(1)}%</div>
                   </div>
                   <div className="initiative-progress">
+                    <div className="line-bg" />
                     <div
-                      className="bar-segment left"
-                      style={{ width: `${initiatedPercent}%` }}
-                    />
-                    <div
-                      className="bar-segment right"
-                      style={{ width: `${receivedPercent}%` }}
+                      className="initiative-indicator"
+                      style={{ left: `${initiatedPercent}%` }}
                     />
                   </div>
                   <div className="initiative-side">
                     <div className="avatar-placeholder">
                       {reportData.friendAvatarUrl ? <img src={reportData.friendAvatarUrl} alt="friend-avatar" /> : reportData.friendName.substring(0, 1)}
                     </div>
-                    <div className="count">{reportData.initiative.received}{'\u6b21'}</div>
+                    <div className="count">{reportData.initiative.received}次</div>
                     <div className="percent">{receivedPercent.toFixed(1)}%</div>
                   </div>
+                </div>
+                <div className="initiative-desc">
+                  {reportData.initiative.initiated > reportData.initiative.received ? '每一个话题都是你对TA的在意' : 'TA总是那个率先打破沉默的人'}
                 </div>
               </div>
             </section>
@@ -442,46 +510,75 @@ function DualReportWindow() {
 
           {reportData.response && (
             <section className="section">
-              <div className="label-text">回复速度</div>
-              <h2 className="hero-title">{'\u79d2\u56de\uff0c\u662f\u56e0\u4e3a\u5728\u4e4e'}</h2>
-              <div className="response-grid">
-                <div className="response-card">
-                  <div className="icon-box">
-                    <Clock size={24} />
+              <div className="label-text">回应速度</div>
+              <h2 className="hero-title">你说，我在</h2>
+              <div className="response-pulse-container">
+                <div className="pulse-visual">
+                  <div className="pulse-ripple one" />
+                  <div className="pulse-ripple two" />
+                  <div className="pulse-ripple three" />
+
+                  <div className="pulse-node left">
+                    <div className="label">最快回复</div>
+                    <div className="value">{reportData.response.fastest}<span>秒</span></div>
                   </div>
-                  <div className="label">{'\u5e73\u5747\u56de\u590d'}</div>
-                  <div className="value">{Math.round(reportData.response.avg / 60)}<span>{'\u5206'}</span></div>
-                </div>
-                <div className="response-card fastest">
-                  <div className="icon-box">
-                    <Zap size={24} />
+
+                  <div className="pulse-hub">
+                    <div className="label">平均回复</div>
+                    <div className="value">{Math.round(reportData.response.avg / 60)}<span>分</span></div>
                   </div>
-                  <div className="label">{'\u6700\u5feb\u56de\u590d'}</div>
-                  <div className="value">{reportData.response.fastest}<span>{'\u79d2'}</span></div>
-                </div>
-                <div className="response-card sample">
-                  <div className="icon-box">
-                    <MessageCircle size={24} />
+
+                  <div className="pulse-node right">
+                    <div className="label">最慢回复</div>
+                    <div className="value">
+                      {reportData.response.slowest > 3600
+                        ? (reportData.response.slowest / 3600).toFixed(1)
+                        : Math.round(reportData.response.slowest / 60)}
+                      <span>{reportData.response.slowest > 3600 ? '时' : '分'}</span>
+                    </div>
                   </div>
-                  <div className="label">{'\u7edf\u8ba1\u6837\u672c'}</div>
-                  <div className="value">{reportData.response.count}<span>{'\u6b21'}</span></div>
                 </div>
               </div>
               <p className="hero-desc response-note">
-                {`\u5171\u7edf\u8ba1 ${reportData.response.count} \u6b21\u6709\u6548\u56de\u590d\uff0c\u5e73\u5747\u7ea6 ${responseAvgMinutes} \u5206\u949f\uff0c\u6700\u5feb ${reportData.response.fastest} \u79d2\u3002`}
+                {`在 ${reportData.response.count} 次互动中，平均约 ${responseAvgMinutes} 分钟，最快 ${reportData.response.fastest} 秒。`}
               </p>
             </section>
           )}
 
           {reportData.streak && (
             <section className="section">
-              <div className="label-text">{'\u804a\u5929\u706b\u82b1'}</div>
-              <h2 className="hero-title">{'\u6700\u957f\u8fde\u7eed\u804a\u5929'}</h2>
-              <div className="streak-container">
-                <div className="streak-flame">{'\uD83D\uDD25'}</div>
-                <div className="streak-days">{reportData.streak.days}<span>{'\u5929'}</span></div>
-                <div className="streak-range">
-                  {reportData.streak.startDate} ~ {reportData.streak.endDate}
+              <div className="label-text">聊天火花</div>
+              <h2 className="hero-title">最长连续聊天</h2>
+              <div className="streak-spark-visual premium">
+                <div className="spark-ambient-glow" />
+
+                <div className="spark-ember one" />
+                <div className="spark-ember two" />
+                <div className="spark-ember three" />
+                <div className="spark-ember four" />
+
+                <div className="spark-core-wrapper">
+                  <div className="spark-flame-outer" />
+                  <div className="spark-flame-inner" />
+                  <div className="spark-core">
+                    <div className="spark-days">{reportData.streak.days}</div>
+                    <div className="spark-label">DAYS</div>
+                  </div>
+                </div>
+
+                <div className="streak-bridge premium">
+                  <div className="bridge-date start">
+                    <div className="date-orb" />
+                    <span>{reportData.streak.startDate}</span>
+                  </div>
+                  <div className="bridge-line">
+                    <div className="line-glow" />
+                    <div className="line-string" />
+                  </div>
+                  <div className="bridge-date end">
+                    <span>{reportData.streak.endDate}</span>
+                    <div className="date-orb" />
+                  </div>
                 </div>
               </div>
             </section>
@@ -497,50 +594,48 @@ function DualReportWindow() {
             <div className="label-text">年度统计</div>
             <h2 className="hero-title">{yearTitle}数据概览</h2>
             <div className="dual-stat-grid">
-              {statItems.map((item) => {
-                const valueText = item.value.toLocaleString()
-                const isLong = valueText.length > 7
-                const Icon = item.icon
-                return (
-                  <div key={item.label} className={`dual-stat-card ${isLong ? 'long' : ''}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
-                    <div className="stat-icon" style={{
-                      width: '40px',
-                      height: '40px',
-                      borderRadius: '12px',
-                      background: `${item.color}15`,
-                      color: item.color,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      marginBottom: '4px'
-                    }}>
-                      <Icon size={20} />
-                    </div>
-                    <div className="stat-num">{valueText}</div>
-                    <div className="stat-unit">{item.label}</div>
-                  </div>
-                )
-              })}
+              {statItems.slice(0, 2).map((item) => (
+                <div key={item.label} className="dual-stat-card">
+                  <div className="stat-num">{item.value.toLocaleString()}</div>
+                  <div className="stat-unit">{item.label}</div>
+                </div>
+              ))}
+            </div>
+            <div className="dual-stat-grid bottom">
+              {statItems.slice(2).map((item) => (
+                <div key={item.label} className="dual-stat-card">
+                  <div className="stat-num small">{item.value.toLocaleString()}</div>
+                  <div className="stat-unit">{item.label}</div>
+                </div>
+              ))}
             </div>
 
             <div className="emoji-row">
               <div className="emoji-card">
                 <div className="emoji-title">我常用的表情</div>
                 {myEmojiUrl ? (
-                  <img src={myEmojiUrl} alt="my-emoji" />
-                ) : (
-                  <div className="emoji-placeholder">{stats.myTopEmojiMd5 || '暂无'}</div>
-                )}
-                <div className="emoji-count">{stats.myTopEmojiCount ? `${stats.myTopEmojiCount}\u6b21` : '\u6682\u65e0\u7edf\u8ba1'}</div>
+                  <img src={myEmojiUrl} alt="my-emoji" onError={(e) => {
+                    (e.target as HTMLImageElement).nextElementSibling?.removeAttribute('style');
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }} />
+                ) : null}
+                <div className="emoji-placeholder" style={myEmojiUrl ? { display: 'none' } : undefined}>
+                  {stats.myTopEmojiMd5 || '暂无'}
+                </div>
+                <div className="emoji-count">{stats.myTopEmojiCount ? `${stats.myTopEmojiCount}次` : '暂无统计'}</div>
               </div>
               <div className="emoji-card">
                 <div className="emoji-title">{reportData.friendName}常用的表情</div>
                 {friendEmojiUrl ? (
-                  <img src={friendEmojiUrl} alt="friend-emoji" />
-                ) : (
-                  <div className="emoji-placeholder">{stats.friendTopEmojiMd5 || '暂无'}</div>
-                )}
-                <div className="emoji-count">{stats.friendTopEmojiCount ? `${stats.friendTopEmojiCount}\u6b21` : '\u6682\u65e0\u7edf\u8ba1'}</div>
+                  <img src={friendEmojiUrl} alt="friend-emoji" onError={(e) => {
+                    (e.target as HTMLImageElement).nextElementSibling?.removeAttribute('style');
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }} />
+                ) : null}
+                <div className="emoji-placeholder" style={friendEmojiUrl ? { display: 'none' } : undefined}>
+                  {stats.friendTopEmojiMd5 || '暂无'}
+                </div>
+                <div className="emoji-count">{stats.friendTopEmojiCount ? `${stats.friendTopEmojiCount}次` : '暂无统计'}</div>
               </div>
             </div>
           </section>

@@ -6,6 +6,9 @@ export interface DualReportMessage {
   isSentByMe: boolean
   createTime: number
   createTimeStr: string
+  localType?: number
+  emojiMd5?: string
+  emojiCdnUrl?: string
 }
 
 export interface DualReportFirstChat {
@@ -14,6 +17,9 @@ export interface DualReportFirstChat {
   content: string
   isSentByMe: boolean
   senderUsername?: string
+  localType?: number
+  emojiMd5?: string
+  emojiCdnUrl?: string
 }
 
 export interface DualReportStats {
@@ -46,6 +52,9 @@ export interface DualReportData {
     isSentByMe: boolean
     friendName: string
     firstThreeMessages: DualReportMessage[]
+    localType?: number
+    emojiMd5?: string
+    emojiCdnUrl?: string
   } | null
   stats: DualReportStats
   topPhrases: Array<{ phrase: string; count: number }>
@@ -526,55 +535,105 @@ class DualReportService {
       }
 
       this.reportProgress('获取首条聊天记录...', 15, onProgress)
-      const firstRows = await this.getFirstMessages(friendUsername, 3, 0, 0)
+      const firstRows = await this.getFirstMessages(friendUsername, 10, 0, 0)
       let firstChat: DualReportFirstChat | null = null
       if (firstRows.length > 0) {
         const row = firstRows[0]
         const createTime = parseInt(row.create_time || '0', 10) * 1000
-        const content = this.decodeMessageContent(row.message_content, row.compress_content)
+        const rawContent = this.decodeMessageContent(row.message_content, row.compress_content)
+        const localType = this.getRowInt(row, ['local_type', 'localType', 'type', 'msg_type', 'msgType'], 0)
+        let emojiMd5: string | undefined
+        let emojiCdnUrl: string | undefined
+        if (localType === 47) {
+          const stripped = this.stripEmojiOwnerPrefix(rawContent)
+          emojiMd5 = this.normalizeEmojiMd5(this.coerceString(this.getRecordField(row, ['emoji_md5', 'emojiMd5', 'md5']))) || this.extractEmojiMd5(stripped)
+          emojiCdnUrl = this.normalizeEmojiUrl(this.coerceString(this.getRecordField(row, ['emoji_cdn_url', 'emojiCdnUrl', 'cdnurl']))) || this.extractEmojiUrl(stripped)
+        }
+
         firstChat = {
           createTime,
           createTimeStr: this.formatDateTime(createTime),
-          content: String(content || ''),
+          content: String(rawContent || ''),
           isSentByMe: this.resolveIsSent(row, rawWxid, cleanedWxid),
-          senderUsername: row.sender_username || row.sender
+          senderUsername: row.sender_username || row.sender,
+          localType,
+          emojiMd5,
+          emojiCdnUrl
         }
       }
       const firstChatMessages: DualReportMessage[] = firstRows.map((row) => {
         const msgTime = parseInt(row.create_time || '0', 10) * 1000
-        const msgContent = this.decodeMessageContent(row.message_content, row.compress_content)
+        const rawContent = this.decodeMessageContent(row.message_content, row.compress_content)
+        const localType = this.getRowInt(row, ['local_type', 'localType', 'type', 'msg_type', 'msgType'], 0)
+        let emojiMd5: string | undefined
+        let emojiCdnUrl: string | undefined
+        if (localType === 47) {
+          const stripped = this.stripEmojiOwnerPrefix(rawContent)
+          emojiMd5 = this.normalizeEmojiMd5(this.coerceString(this.getRecordField(row, ['emoji_md5', 'emojiMd5', 'md5']))) || this.extractEmojiMd5(stripped)
+          emojiCdnUrl = this.normalizeEmojiUrl(this.coerceString(this.getRecordField(row, ['emoji_cdn_url', 'emojiCdnUrl', 'cdnurl']))) || this.extractEmojiUrl(stripped)
+        }
+
         return {
-          content: String(msgContent || ''),
+          content: String(rawContent || ''),
           isSentByMe: this.resolveIsSent(row, rawWxid, cleanedWxid),
           createTime: msgTime,
-          createTimeStr: this.formatDateTime(msgTime)
+          createTimeStr: this.formatDateTime(msgTime),
+          localType,
+          emojiMd5,
+          emojiCdnUrl
         }
       })
 
       let yearFirstChat: DualReportData['yearFirstChat'] = null
       if (!isAllTime) {
         this.reportProgress('获取今年首次聊天...', 20, onProgress)
-        const firstYearRows = await this.getFirstMessages(friendUsername, 3, startTime, endTime)
+        const firstYearRows = await this.getFirstMessages(friendUsername, 10, startTime, endTime)
         if (firstYearRows.length > 0) {
           const firstRow = firstYearRows[0]
           const createTime = parseInt(firstRow.create_time || '0', 10) * 1000
           const firstThreeMessages: DualReportMessage[] = firstYearRows.map((row) => {
             const msgTime = parseInt(row.create_time || '0', 10) * 1000
-            const msgContent = this.decodeMessageContent(row.message_content, row.compress_content)
+            const rawContent = this.decodeMessageContent(row.message_content, row.compress_content)
+            const localType = this.getRowInt(row, ['local_type', 'localType', 'type', 'msg_type', 'msgType'], 0)
+            let emojiMd5: string | undefined
+            let emojiCdnUrl: string | undefined
+            if (localType === 47) {
+              const stripped = this.stripEmojiOwnerPrefix(rawContent)
+              emojiMd5 = this.normalizeEmojiMd5(this.coerceString(this.getRecordField(row, ['emoji_md5', 'emojiMd5', 'md5']))) || this.extractEmojiMd5(stripped)
+              emojiCdnUrl = this.normalizeEmojiUrl(this.coerceString(this.getRecordField(row, ['emoji_cdn_url', 'emojiCdnUrl', 'cdnurl']))) || this.extractEmojiUrl(stripped)
+            }
+
             return {
-              content: String(msgContent || ''),
+              content: String(rawContent || ''),
               isSentByMe: this.resolveIsSent(row, rawWxid, cleanedWxid),
               createTime: msgTime,
-              createTimeStr: this.formatDateTime(msgTime)
+              createTimeStr: this.formatDateTime(msgTime),
+              localType,
+              emojiMd5,
+              emojiCdnUrl
             }
           })
+          const firstRowYear = firstYearRows[0]
+          const rawContentYear = this.decodeMessageContent(firstRowYear.message_content, firstRowYear.compress_content)
+          const localTypeYear = this.getRowInt(firstRowYear, ['local_type', 'localType', 'type', 'msg_type', 'msgType'], 0)
+          let emojiMd5Year: string | undefined
+          let emojiCdnUrlYear: string | undefined
+          if (localTypeYear === 47) {
+            const stripped = this.stripEmojiOwnerPrefix(rawContentYear)
+            emojiMd5Year = this.normalizeEmojiMd5(this.coerceString(this.getRecordField(firstRowYear, ['emoji_md5', 'emojiMd5', 'md5']))) || this.extractEmojiMd5(stripped)
+            emojiCdnUrlYear = this.normalizeEmojiUrl(this.coerceString(this.getRecordField(firstRowYear, ['emoji_cdn_url', 'emojiCdnUrl', 'cdnurl']))) || this.extractEmojiUrl(stripped)
+          }
+
           yearFirstChat = {
             createTime,
             createTimeStr: this.formatDateTime(createTime),
-            content: String(this.decodeMessageContent(firstRow.message_content, firstRow.compress_content) || ''),
-            isSentByMe: this.resolveIsSent(firstRow, rawWxid, cleanedWxid),
+            content: String(rawContentYear || ''),
+            isSentByMe: this.resolveIsSent(firstRowYear, rawWxid, cleanedWxid),
             friendName,
-            firstThreeMessages
+            firstThreeMessages,
+            localType: localTypeYear,
+            emojiMd5: emojiMd5Year,
+            emojiCdnUrl: emojiCdnUrlYear
           }
         }
       }
@@ -660,7 +719,6 @@ class DualReportService {
         count: p.count
       }))
 
-      // Attach extra stats to the data object (needs interface update if strictly typed, but data is flexible)
       const reportData: DualReportData = {
         year: reportYear,
         selfName: myName,
@@ -673,13 +731,12 @@ class DualReportService {
         yearFirstChat,
         stats,
         topPhrases,
-        // Append new C++ stats
         heatmap: cppData.heatmap,
         initiative: cppData.initiative,
         response: cppData.response,
         monthly: cppData.monthly,
         streak: cppData.streak
-      } as any // Use as any to bypass strict type check for new fields, or update interface
+      } as any
 
       this.reportProgress('双人报告生成完成', 100, onProgress)
       return { success: true, data: reportData }
