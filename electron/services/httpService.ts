@@ -1,14 +1,17 @@
-/**
- * HTTP API 服务
- * 提供 ChatLab 标准化格式的消息查询 API
+﻿/**
+ * HTTP API 鏈嶅姟
+ * 鎻愪緵 ChatLab 鏍囧噯鍖栨牸寮忕殑娑堟伅鏌ヨ API
  */
 import * as http from 'http'
+import * as fs from 'fs'
+import * as path from 'path'
 import { URL } from 'url'
 import { chatService, Message } from './chatService'
 import { wcdbService } from './wcdbService'
 import { ConfigService } from './config'
+import { videoService } from './videoService'
 
-// ChatLab 格式定义
+// ChatLab 鏍煎紡瀹氫箟
 interface ChatLabHeader {
   version: string
   exportedAt: number
@@ -42,6 +45,7 @@ interface ChatLabMessage {
   content: string | null
   platformMessageId?: string
   replyToMessageId?: string
+  mediaPath?: string
 }
 
 interface ChatLabData {
@@ -51,7 +55,23 @@ interface ChatLabData {
   messages: ChatLabMessage[]
 }
 
-// ChatLab 消息类型映射
+interface ApiMediaOptions {
+  enabled: boolean
+  exportImages: boolean
+  exportVoices: boolean
+  exportVideos: boolean
+  exportEmojis: boolean
+}
+
+type MediaKind = 'image' | 'voice' | 'video' | 'emoji'
+
+interface ApiExportedMedia {
+  kind: MediaKind
+  fileName: string
+  fullPath: string
+}
+
+// ChatLab 娑堟伅绫诲瀷鏄犲皠
 const ChatLabType = {
   TEXT: 0,
   IMAGE: 1,
@@ -86,7 +106,7 @@ class HttpService {
   }
 
   /**
-   * 启动 HTTP 服务
+   * 鍚姩 HTTP 鏈嶅姟
    */
   async start(port: number = 5031): Promise<{ success: boolean; port?: number; error?: string }> {
     if (this.running && this.server) {
@@ -98,7 +118,7 @@ class HttpService {
     return new Promise((resolve) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res))
 
-      // 跟踪所有连接，以便关闭时能强制断开
+      // 璺熻釜鎵€鏈夎繛鎺ワ紝浠ヤ究鍏抽棴鏃惰兘寮哄埗鏂紑
       this.server.on('connection', (socket) => {
         this.connections.add(socket)
         socket.on('close', () => {
@@ -125,12 +145,12 @@ class HttpService {
   }
 
   /**
-   * 停止 HTTP 服务
+   * 鍋滄 HTTP 鏈嶅姟
    */
   async stop(): Promise<void> {
     return new Promise((resolve) => {
       if (this.server) {
-        // 强制关闭所有活动连接
+        // 寮哄埗鍏抽棴鎵€鏈夋椿鍔ㄨ繛鎺?
         for (const socket of this.connections) {
           socket.destroy()
         }
@@ -150,24 +170,28 @@ class HttpService {
   }
 
   /**
-   * 检查服务是否运行
+   * 妫€鏌ユ湇鍔℃槸鍚﹁繍琛?
    */
   isRunning(): boolean {
     return this.running
   }
 
   /**
-   * 获取当前端口
+   * 鑾峰彇褰撳墠绔彛
    */
   getPort(): number {
     return this.port
   }
 
+  getDefaultMediaExportPath(): string {
+    return this.getApiMediaExportPath()
+  }
+
   /**
-   * 处理 HTTP 请求
+   * 澶勭悊 HTTP 璇锋眰
    */
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    // 设置 CORS 头
+    // 璁剧疆 CORS 澶?
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
@@ -182,7 +206,7 @@ class HttpService {
     const pathname = url.pathname
 
     try {
-      // 路由处理
+      // 璺敱澶勭悊
       if (pathname === '/health' || pathname === '/api/v1/health') {
         this.sendJson(res, { status: 'ok' })
       } else if (pathname === '/api/v1/messages') {
@@ -201,8 +225,8 @@ class HttpService {
   }
 
   /**
-   * 批量获取消息（循环游标直到满足 limit）
-   * 绕过 chatService 的单 batch 限制，直接操作 wcdbService 游标
+   * 鎵归噺鑾峰彇娑堟伅锛堝惊鐜父鏍囩洿鍒版弧瓒?limit锛?
+   * 缁曡繃 chatService 鐨勫崟 batch 闄愬埗锛岀洿鎺ユ搷浣?wcdbService 娓告爣
    */
   private async fetchMessagesBatch(
     talker: string,
@@ -213,14 +237,14 @@ class HttpService {
     ascending: boolean
   ): Promise<{ success: boolean; messages?: Message[]; hasMore?: boolean; error?: string }> {
     try {
-      // 使用固定 batch 大小（与 limit 相同或最大 500）来减少循环次数
+      // 浣跨敤鍥哄畾 batch 澶у皬锛堜笌 limit 鐩稿悓鎴栨渶澶?500锛夋潵鍑忓皯寰幆娆℃暟
       const batchSize = Math.min(limit, 500)
       const beginTimestamp = startTime > 10000000000 ? Math.floor(startTime / 1000) : startTime
       const endTimestamp = endTime > 10000000000 ? Math.floor(endTime / 1000) : endTime
 
       const cursorResult = await wcdbService.openMessageCursor(talker, batchSize, ascending, beginTimestamp, endTimestamp)
       if (!cursorResult.success || !cursorResult.cursor) {
-        return { success: false, error: cursorResult.error || '打开消息游标失败' }
+        return { success: false, error: cursorResult.error || '鎵撳紑娑堟伅娓告爣澶辫触' }
       }
 
       const cursor = cursorResult.cursor
@@ -229,7 +253,7 @@ class HttpService {
         let hasMore = true
         let skipped = 0
 
-        // 循环获取消息，处理 offset 跳过 + limit 累积
+        // 寰幆鑾峰彇娑堟伅锛屽鐞?offset 璺宠繃 + limit 绱Н
         while (allRows.length < limit && hasMore) {
           const batch = await wcdbService.fetchMessageBatch(cursor)
           if (!batch.success || !batch.rows || batch.rows.length === 0) {
@@ -240,7 +264,7 @@ class HttpService {
           let rows = batch.rows
           hasMore = batch.hasMore === true
 
-          // 处理 offset: 跳过前 N 条
+          // 澶勭悊 offset: 璺宠繃鍓?N 鏉?
           if (skipped < offset) {
             const remaining = offset - skipped
             if (remaining >= rows.length) {
@@ -256,7 +280,7 @@ class HttpService {
 
         const trimmedRows = allRows.slice(0, limit)
         const finalHasMore = hasMore || allRows.length > limit
-        const messages = this.mapRowsToMessagesSimple(trimmedRows)
+        const messages = chatService.mapRowsToMessagesForApi(trimmedRows)
         return { success: true, messages, hasMore: finalHasMore }
       } finally {
         await wcdbService.closeMessageCursor(cursor)
@@ -268,154 +292,134 @@ class HttpService {
   }
 
   /**
-   * 简单的行数据到 Message 映射（用于 API 输出）
+   * Query param helpers.
    */
-  private mapRowsToMessagesSimple(rows: Record<string, any>[]): Message[] {
-    const myWxid = this.configService.get('myWxid') || ''
-    const messages: Message[] = []
-
-    for (const row of rows) {
-      const content = this.getField(row, ['message_content', 'messageContent', 'content', 'msg_content', 'WCDB_CT_message_content']) || ''
-      const localType = parseInt(this.getField(row, ['local_type', 'localType', 'type', 'msg_type', 'WCDB_CT_local_type']) || '1', 10)
-      const isSendRaw = this.getField(row, ['computed_is_send', 'computedIsSend', 'is_send', 'isSend', 'WCDB_CT_is_send'])
-      const senderUsername = this.getField(row, ['sender_username', 'senderUsername', 'sender', 'WCDB_CT_sender_username']) || ''
-      const createTime = parseInt(this.getField(row, ['create_time', 'createTime', 'msg_create_time', 'WCDB_CT_create_time']) || '0', 10)
-      const localId = parseInt(this.getField(row, ['local_id', 'localId', 'WCDB_CT_local_id', 'rowid']) || '0', 10)
-      const serverId = this.getField(row, ['server_id', 'serverId', 'WCDB_CT_server_id']) || ''
-
-      let isSend: number
-      if (isSendRaw !== null && isSendRaw !== undefined) {
-        isSend = parseInt(isSendRaw, 10)
-      } else if (senderUsername && myWxid) {
-        isSend = senderUsername.toLowerCase() === myWxid.toLowerCase() ? 1 : 0
-      } else {
-        isSend = 0
-      }
-
-      // 解析消息内容中的特殊字段
-      let parsedContent = content
-      let xmlType: string | undefined
-      let linkTitle: string | undefined
-      let fileName: string | undefined
-      let emojiCdnUrl: string | undefined
-      let emojiMd5: string | undefined
-      let imageMd5: string | undefined
-      let videoMd5: string | undefined
-      let cardNickname: string | undefined
-
-      if (localType === 49 && content) {
-        // 提取 type 子标签
-        const typeMatch = /<type>(\d+)<\/type>/i.exec(content)
-        if (typeMatch) xmlType = typeMatch[1]
-        // 提取 title
-        const titleMatch = /<title>([^<]*)<\/title>/i.exec(content)
-        if (titleMatch) linkTitle = titleMatch[1]
-        // 提取文件名
-        const fnMatch = /<title>([^<]*)<\/title>/i.exec(content)
-        if (fnMatch) fileName = fnMatch[1]
-      }
-
-      if (localType === 47 && content) {
-        const cdnMatch = /cdnurl\s*=\s*"([^"]+)"/i.exec(content)
-        if (cdnMatch) emojiCdnUrl = cdnMatch[1]
-        const md5Match = /md5\s*=\s*"([^"]+)"/i.exec(content)
-        if (md5Match) emojiMd5 = md5Match[1]
-      }
-
-      messages.push({
-        localId,
-        talker: '',
-        localType,
-        createTime,
-        sortSeq: createTime,
-        content: parsedContent,
-        isSend,
-        senderUsername,
-        serverId: serverId ? parseInt(serverId, 10) || 0 : 0,
-        rawContent: content,
-        parsedContent: content,
-        emojiCdnUrl,
-        emojiMd5,
-        imageMd5,
-        videoMd5,
-        xmlType,
-        linkTitle,
-        fileName,
-        cardNickname
-      } as Message)
-    }
-
-    return messages
+  private parseIntParam(value: string | null, defaultValue: number, min: number, max: number): number {
+    const parsed = parseInt(value || '', 10)
+    if (!Number.isFinite(parsed)) return defaultValue
+    return Math.min(Math.max(parsed, min), max)
   }
 
-  /**
-   * 从行数据中获取字段值（兼容多种字段名）
-   */
-  private getField(row: Record<string, any>, keys: string[]): string | null {
+  private parseBooleanParam(url: URL, keys: string[], defaultValue: boolean = false): boolean {
     for (const key of keys) {
-      if (row[key] !== undefined && row[key] !== null) {
-        return String(row[key])
-      }
+      const raw = url.searchParams.get(key)
+      if (raw === null) continue
+      const normalized = raw.trim().toLowerCase()
+      if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+      if (['0', 'false', 'no', 'off'].includes(normalized)) return false
     }
-    return null
+    return defaultValue
   }
 
-  /**
-   * 处理消息查询
-   * GET /api/v1/messages?talker=xxx&limit=100&start=20260101&chatlab=1
-   */
+  private parseMediaOptions(url: URL): ApiMediaOptions {
+    const mediaEnabled = this.parseBooleanParam(url, ['media', 'meiti'], false)
+    if (!mediaEnabled) {
+      return {
+        enabled: false,
+        exportImages: false,
+        exportVoices: false,
+        exportVideos: false,
+        exportEmojis: false
+      }
+    }
+
+    return {
+      enabled: true,
+      exportImages: this.parseBooleanParam(url, ['image', 'tupian'], true),
+      exportVoices: this.parseBooleanParam(url, ['voice', 'vioce'], true),
+      exportVideos: this.parseBooleanParam(url, ['video'], true),
+      exportEmojis: this.parseBooleanParam(url, ['emoji'], true)
+    }
+  }
+
   private async handleMessages(url: URL, res: http.ServerResponse): Promise<void> {
-    const talker = url.searchParams.get('talker')
-    const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 10000)
-    const offset = parseInt(url.searchParams.get('offset') || '0', 10)
+    const talker = (url.searchParams.get('talker') || '').trim()
+    const limit = this.parseIntParam(url.searchParams.get('limit'), 100, 1, 10000)
+    const offset = this.parseIntParam(url.searchParams.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER)
+    const keyword = (url.searchParams.get('keyword') || '').trim().toLowerCase()
     const startParam = url.searchParams.get('start')
     const endParam = url.searchParams.get('end')
-    const chatlab = url.searchParams.get('chatlab') === '1'
-    const formatParam = url.searchParams.get('format')
+    const chatlab = this.parseBooleanParam(url, ['chatlab'], false)
+    const formatParam = (url.searchParams.get('format') || '').trim().toLowerCase()
     const format = formatParam || (chatlab ? 'chatlab' : 'json')
+    const mediaOptions = this.parseMediaOptions(url)
 
     if (!talker) {
       this.sendError(res, 400, 'Missing required parameter: talker')
       return
     }
 
-    // 解析时间参数 (支持 YYYYMMDD 格式)
+    if (format !== 'json' && format !== 'chatlab') {
+      this.sendError(res, 400, 'Invalid format, supported: json/chatlab')
+      return
+    }
+
     const startTime = this.parseTimeParam(startParam)
     const endTime = this.parseTimeParam(endParam, true)
+    const queryOffset = keyword ? 0 : offset
+    const queryLimit = keyword ? 10000 : limit
 
-    // 使用批量获取方法，绕过 chatService 的单 batch 限制
-    const result = await this.fetchMessagesBatch(talker, offset, limit, startTime, endTime, true)
+    const result = await this.fetchMessagesBatch(talker, queryOffset, queryLimit, startTime, endTime, true)
     if (!result.success || !result.messages) {
       this.sendError(res, 500, result.error || 'Failed to get messages')
       return
     }
 
-    if (format === 'chatlab') {
-      // 获取会话显示名
-      const displayNames = await this.getDisplayNames([talker])
-      const talkerName = displayNames[talker] || talker
+    let messages = result.messages
+    let hasMore = result.hasMore === true
 
-      const chatLabData = await this.convertToChatLab(result.messages, talker, talkerName)
-      this.sendJson(res, chatLabData)
-    } else {
-      // 返回原始消息格式
-      this.sendJson(res, {
-        success: true,
-        talker,
-        count: result.messages.length,
-        hasMore: result.hasMore,
-        messages: result.messages
+    if (keyword) {
+      const filtered = messages.filter((msg) => {
+        const content = (msg.parsedContent || msg.rawContent || '').toLowerCase()
+        return content.includes(keyword)
       })
+      const endIndex = offset + limit
+      hasMore = filtered.length > endIndex
+      messages = filtered.slice(offset, endIndex)
     }
+
+    const mediaMap = mediaOptions.enabled
+      ? await this.exportMediaForMessages(messages, talker, mediaOptions)
+      : new Map<number, ApiExportedMedia>()
+
+    const displayNames = await this.getDisplayNames([talker])
+    const talkerName = displayNames[talker] || talker
+
+    if (format === 'chatlab') {
+      const chatLabData = await this.convertToChatLab(messages, talker, talkerName, mediaMap)
+      this.sendJson(res, {
+        ...chatLabData,
+        media: {
+          enabled: mediaOptions.enabled,
+          exportPath: this.getApiMediaExportPath(),
+          count: mediaMap.size
+        }
+      })
+      return
+    }
+
+    const apiMessages = messages.map((msg) => this.toApiMessage(msg, mediaMap.get(msg.localId)))
+    this.sendJson(res, {
+      success: true,
+      talker,
+      count: apiMessages.length,
+      hasMore,
+      media: {
+        enabled: mediaOptions.enabled,
+        exportPath: this.getApiMediaExportPath(),
+        count: mediaMap.size
+      },
+      messages: apiMessages
+    })
   }
 
   /**
-   * 处理会话列表查询
+   * 澶勭悊浼氳瘽鍒楄〃鏌ヨ
    * GET /api/v1/sessions?keyword=xxx&limit=100
    */
   private async handleSessions(url: URL, res: http.ServerResponse): Promise<void> {
-    const keyword = url.searchParams.get('keyword') || ''
-    const limit = parseInt(url.searchParams.get('limit') || '100', 10)
+    const keyword = (url.searchParams.get('keyword') || '').trim()
+    const limit = this.parseIntParam(url.searchParams.get('limit'), 100, 1, 10000)
 
     try {
       const sessions = await chatService.getSessions()
@@ -433,7 +437,7 @@ class HttpService {
         )
       }
 
-      // 应用 limit
+      // 搴旂敤 limit
       const limitedSessions = filteredSessions.slice(0, limit)
 
       this.sendJson(res, {
@@ -453,12 +457,12 @@ class HttpService {
   }
 
   /**
-   * 处理联系人查询
+   * 澶勭悊鑱旂郴浜烘煡璇?
    * GET /api/v1/contacts?keyword=xxx&limit=100
    */
   private async handleContacts(url: URL, res: http.ServerResponse): Promise<void> {
-    const keyword = url.searchParams.get('keyword') || ''
-    const limit = parseInt(url.searchParams.get('limit') || '100', 10)
+    const keyword = (url.searchParams.get('keyword') || '').trim()
+    const limit = this.parseIntParam(url.searchParams.get('limit'), 100, 1, 10000)
 
     try {
       const contacts = await chatService.getContacts()
@@ -490,30 +494,180 @@ class HttpService {
     }
   }
 
+  private getApiMediaExportPath(): string {
+    return path.join(this.configService.getCacheBasePath(), 'api-media')
+  }
+
+  private sanitizeFileName(value: string, fallback: string): string {
+    const safe = (value || '')
+      .trim()
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+      .replace(/\.+$/g, '')
+    return safe || fallback
+  }
+
+  private ensureDir(dirPath: string): void {
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true })
+    }
+  }
+
+  private detectImageExt(buffer: Buffer): string {
+    if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return '.jpg'
+    if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return '.png'
+    if (buffer.length >= 6) {
+      const sig6 = buffer.subarray(0, 6).toString('ascii')
+      if (sig6 === 'GIF87a' || sig6 === 'GIF89a') return '.gif'
+    }
+    if (buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return '.webp'
+    if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4d) return '.bmp'
+    return '.jpg'
+  }
+
+  private async exportMediaForMessages(
+    messages: Message[],
+    talker: string,
+    options: ApiMediaOptions
+  ): Promise<Map<number, ApiExportedMedia>> {
+    const mediaMap = new Map<number, ApiExportedMedia>()
+    if (!options.enabled || messages.length === 0) {
+      return mediaMap
+    }
+
+    const sessionDir = path.join(this.getApiMediaExportPath(), this.sanitizeFileName(talker, 'session'))
+    this.ensureDir(sessionDir)
+
+    for (const msg of messages) {
+      const exported = await this.exportMediaForMessage(msg, talker, sessionDir, options)
+      if (exported) {
+        mediaMap.set(msg.localId, exported)
+      }
+    }
+
+    return mediaMap
+  }
+
+  private async exportMediaForMessage(
+    msg: Message,
+    talker: string,
+    sessionDir: string,
+    options: ApiMediaOptions
+  ): Promise<ApiExportedMedia | null> {
+    try {
+      if (msg.localType === 3 && options.exportImages) {
+        const result = await chatService.getImageData(talker, String(msg.localId))
+        if (result.success && result.data) {
+          const imageBuffer = Buffer.from(result.data, 'base64')
+          const ext = this.detectImageExt(imageBuffer)
+          const fileBase = this.sanitizeFileName(msg.imageMd5 || msg.imageDatName || `image_${msg.localId}`, `image_${msg.localId}`)
+          const fileName = `${fileBase}${ext}`
+          const targetDir = path.join(sessionDir, 'images')
+          const fullPath = path.join(targetDir, fileName)
+          this.ensureDir(targetDir)
+          if (!fs.existsSync(fullPath)) {
+            fs.writeFileSync(fullPath, imageBuffer)
+          }
+          return { kind: 'image', fileName, fullPath }
+        }
+      }
+
+      if (msg.localType === 34 && options.exportVoices) {
+        const result = await chatService.getVoiceData(
+          talker,
+          String(msg.localId),
+          msg.createTime || undefined,
+          msg.serverId || undefined
+        )
+        if (result.success && result.data) {
+          const fileName = `voice_${msg.localId}.wav`
+          const targetDir = path.join(sessionDir, 'voices')
+          const fullPath = path.join(targetDir, fileName)
+          this.ensureDir(targetDir)
+          if (!fs.existsSync(fullPath)) {
+            fs.writeFileSync(fullPath, Buffer.from(result.data, 'base64'))
+          }
+          return { kind: 'voice', fileName, fullPath }
+        }
+      }
+
+      if (msg.localType === 43 && options.exportVideos && msg.videoMd5) {
+        const info = await videoService.getVideoInfo(msg.videoMd5)
+        if (info.exists && info.videoUrl && fs.existsSync(info.videoUrl)) {
+          const ext = path.extname(info.videoUrl) || '.mp4'
+          const fileName = `${this.sanitizeFileName(msg.videoMd5, `video_${msg.localId}`)}${ext}`
+          const targetDir = path.join(sessionDir, 'videos')
+          const fullPath = path.join(targetDir, fileName)
+          this.ensureDir(targetDir)
+          if (!fs.existsSync(fullPath)) {
+            fs.copyFileSync(info.videoUrl, fullPath)
+          }
+          return { kind: 'video', fileName, fullPath }
+        }
+      }
+
+      if (msg.localType === 47 && options.exportEmojis && msg.emojiCdnUrl) {
+        const result = await chatService.downloadEmoji(msg.emojiCdnUrl, msg.emojiMd5)
+        if (result.success && result.localPath && fs.existsSync(result.localPath)) {
+          const sourceExt = path.extname(result.localPath) || '.gif'
+          const fileName = `${this.sanitizeFileName(msg.emojiMd5 || `emoji_${msg.localId}`, `emoji_${msg.localId}`)}${sourceExt}`
+          const targetDir = path.join(sessionDir, 'emojis')
+          const fullPath = path.join(targetDir, fileName)
+          this.ensureDir(targetDir)
+          if (!fs.existsSync(fullPath)) {
+            fs.copyFileSync(result.localPath, fullPath)
+          }
+          return { kind: 'emoji', fileName, fullPath }
+        }
+      }
+    } catch (e) {
+      console.warn('[HttpService] exportMediaForMessage failed:', e)
+    }
+
+    return null
+  }
+
+  private toApiMessage(msg: Message, media?: ApiExportedMedia): Record<string, any> {
+    return {
+      localId: msg.localId,
+      serverId: msg.serverId,
+      localType: msg.localType,
+      createTime: msg.createTime,
+      sortSeq: msg.sortSeq,
+      isSend: msg.isSend,
+      senderUsername: msg.senderUsername,
+      content: this.getMessageContent(msg),
+      rawContent: msg.rawContent,
+      parsedContent: msg.parsedContent,
+      mediaType: media?.kind,
+      mediaFileName: media?.fileName,
+      mediaPath: media?.fullPath
+    }
+  }
+
   /**
-   * 解析时间参数
-   * 支持 YYYYMMDD 格式，返回秒级时间戳
+   * 瑙ｆ瀽鏃堕棿鍙傛暟
+   * 鏀寔 YYYYMMDD 鏍煎紡锛岃繑鍥炵绾ф椂闂存埑
    */
   private parseTimeParam(param: string | null, isEnd: boolean = false): number {
     if (!param) return 0
 
-    // 纯数字且长度为8，视为 YYYYMMDD
+    // 绾暟瀛椾笖闀垮害涓?锛岃涓?YYYYMMDD
     if (/^\d{8}$/.test(param)) {
       const year = parseInt(param.slice(0, 4), 10)
       const month = parseInt(param.slice(4, 6), 10) - 1
       const day = parseInt(param.slice(6, 8), 10)
       const date = new Date(year, month, day)
       if (isEnd) {
-        // 结束时间设为当天 23:59:59
+        // 缁撴潫鏃堕棿璁句负褰撳ぉ 23:59:59
         date.setHours(23, 59, 59, 999)
       }
       return Math.floor(date.getTime() / 1000)
     }
 
-    // 纯数字，视为时间戳
+    // 绾暟瀛楋紝瑙嗕负鏃堕棿鎴?
     if (/^\d+$/.test(param)) {
       const ts = parseInt(param, 10)
-      // 如果是毫秒级时间戳，转为秒级
+      // 濡傛灉鏄绉掔骇鏃堕棿鎴筹紝杞负绉掔骇
       return ts > 10000000000 ? Math.floor(ts / 1000) : ts
     }
 
@@ -521,7 +675,7 @@ class HttpService {
   }
 
   /**
-   * 获取显示名称
+   * 鑾峰彇鏄剧ず鍚嶇О
    */
   private async getDisplayNames(usernames: string[]): Promise<Record<string, string>> {
     try {
@@ -532,18 +686,23 @@ class HttpService {
     } catch (e) {
       console.error('[HttpService] Failed to get display names:', e)
     }
-    // 返回空对象，调用方会使用 username 作为备用
+    // 杩斿洖绌哄璞★紝璋冪敤鏂逛細浣跨敤 username 浣滀负澶囩敤
     return {}
   }
 
   /**
-   * 转换为 ChatLab 格式
+   * 杞崲涓?ChatLab 鏍煎紡
    */
-  private async convertToChatLab(messages: Message[], talkerId: string, talkerName: string): Promise<ChatLabData> {
+  private async convertToChatLab(
+    messages: Message[],
+    talkerId: string,
+    talkerName: string,
+    mediaMap: Map<number, ApiExportedMedia> = new Map()
+  ): Promise<ChatLabData> {
     const isGroup = talkerId.endsWith('@chatroom')
     const myWxid = this.configService.get('myWxid') || ''
 
-    // 收集所有发送者
+    // 鏀堕泦鎵€鏈夊彂閫佽€?
     const senderSet = new Set<string>()
     for (const msg of messages) {
       if (msg.senderUsername) {
@@ -551,10 +710,10 @@ class HttpService {
       }
     }
 
-    // 获取发送者显示名
+    // 鑾峰彇鍙戦€佽€呮樉绀哄悕
     const senderNames = await this.getDisplayNames(Array.from(senderSet))
 
-    // 获取群昵称（如果是群聊）
+    // 鑾峰彇缇ゆ樀绉帮紙濡傛灉鏄兢鑱婏級
     let groupNicknamesMap = new Map<string, string>()
     if (isGroup) {
       try {
@@ -567,31 +726,31 @@ class HttpService {
       }
     }
 
-    // 构建成员列表
+    // 鏋勫缓鎴愬憳鍒楄〃
     const memberMap = new Map<string, ChatLabMember>()
     for (const msg of messages) {
       const sender = msg.senderUsername || ''
       if (sender && !memberMap.has(sender)) {
         const displayName = senderNames[sender] || sender
         const isSelf = sender === myWxid || sender.toLowerCase() === myWxid.toLowerCase()
-        // 获取群昵称（尝试多种方式）
+        // 鑾峰彇缇ゆ樀绉帮紙灏濊瘯澶氱鏂瑰紡锛?
         const groupNickname = isGroup 
           ? (groupNicknamesMap.get(sender) || groupNicknamesMap.get(sender.toLowerCase()) || '')
           : ''
         memberMap.set(sender, {
           platformId: sender,
-          accountName: isSelf ? '我' : displayName,
+          accountName: isSelf ? '鎴? : displayName,
           groupNickname: groupNickname || undefined
         })
       }
     }
 
-    // 转换消息
+    // 杞崲娑堟伅
     const chatLabMessages: ChatLabMessage[] = messages.map(msg => {
       const sender = msg.senderUsername || ''
       const isSelf = msg.isSend === 1 || sender === myWxid
-      const accountName = isSelf ? '我' : (senderNames[sender] || sender)
-      // 获取该发送者的群昵称
+      const accountName = isSelf ? '鎴? : (senderNames[sender] || sender)
+      // 鑾峰彇璇ュ彂閫佽€呯殑缇ゆ樀绉?
       const groupNickname = isGroup 
         ? (groupNicknamesMap.get(sender) || groupNicknamesMap.get(sender.toLowerCase()) || '')
         : ''
@@ -603,7 +762,8 @@ class HttpService {
         timestamp: msg.createTime,
         type: this.mapMessageType(msg.localType, msg),
         content: this.getMessageContent(msg),
-        platformMessageId: msg.serverId ? String(msg.serverId) : undefined
+        platformMessageId: msg.serverId ? String(msg.serverId) : undefined,
+        mediaPath: mediaMap.get(msg.localId)?.fullPath
       }
     })
 
@@ -626,37 +786,37 @@ class HttpService {
   }
 
   /**
-   * 映射 WeChat 消息类型到 ChatLab 类型
+   * 鏄犲皠 WeChat 娑堟伅绫诲瀷鍒?ChatLab 绫诲瀷
    */
   private mapMessageType(localType: number, msg: Message): number {
     switch (localType) {
-      case 1: // 文本
+      case 1: // 鏂囨湰
         return ChatLabType.TEXT
-      case 3: // 图片
+      case 3: // 鍥剧墖
         return ChatLabType.IMAGE
-      case 34: // 语音
+      case 34: // 璇煶
         return ChatLabType.VOICE
-      case 43: // 视频
+      case 43: // 瑙嗛
         return ChatLabType.VIDEO
-      case 47: // 动画表情
+      case 47: // 鍔ㄧ敾琛ㄦ儏
         return ChatLabType.EMOJI
-      case 48: // 位置
+      case 48: // 浣嶇疆
         return ChatLabType.LOCATION
-      case 42: // 名片
+      case 42: // 鍚嶇墖
         return ChatLabType.CONTACT
-      case 50: // 语音/视频通话
+      case 50: // 璇煶/瑙嗛閫氳瘽
         return ChatLabType.CALL
-      case 10000: // 系统消息
+      case 10000: // 绯荤粺娑堟伅
         return ChatLabType.SYSTEM
-      case 49: // 复合消息
+      case 49: // 澶嶅悎娑堟伅
         return this.mapType49(msg)
-      case 244813135921: // 引用消息
+      case 244813135921: // 寮曠敤娑堟伅
         return ChatLabType.REPLY
-      case 266287972401: // 拍一拍
+      case 266287972401: // 鎷嶄竴鎷?
         return ChatLabType.POKE
-      case 8594229559345: // 红包
+      case 8594229559345: // 绾㈠寘
         return ChatLabType.RED_PACKET
-      case 8589934592049: // 转账
+      case 8589934592049: // 杞处
         return ChatLabType.TRANSFER
       default:
         return ChatLabType.OTHER
@@ -664,27 +824,27 @@ class HttpService {
   }
 
   /**
-   * 映射 Type 49 子类型
+   * 鏄犲皠 Type 49 瀛愮被鍨?
    */
   private mapType49(msg: Message): number {
     const xmlType = msg.xmlType
 
     switch (xmlType) {
-      case '5': // 链接
+      case '5': // 閾炬帴
       case '49':
         return ChatLabType.LINK
-      case '6': // 文件
+      case '6': // 鏂囦欢
         return ChatLabType.FILE
-      case '19': // 聊天记录
+      case '19': // 鑱婂ぉ璁板綍
         return ChatLabType.FORWARD
-      case '33': // 小程序
+      case '33': // 灏忕▼搴?
       case '36':
         return ChatLabType.SHARE
-      case '57': // 引用消息
+      case '57': // 寮曠敤娑堟伅
         return ChatLabType.REPLY
-      case '2000': // 转账
+      case '2000': // 杞处
         return ChatLabType.TRANSFER
-      case '2001': // 红包
+      case '2001': // 绾㈠寘
         return ChatLabType.RED_PACKET
       default:
         return ChatLabType.OTHER
@@ -692,26 +852,26 @@ class HttpService {
   }
 
   /**
-   * 获取消息内容
+   * 鑾峰彇娑堟伅鍐呭
    */
   private getMessageContent(msg: Message): string | null {
-    // 优先使用已解析的内容
+    // 浼樺厛浣跨敤宸茶В鏋愮殑鍐呭
     if (msg.parsedContent) {
       return msg.parsedContent
     }
 
-    // 根据类型返回占位符
+    // 鏍规嵁绫诲瀷杩斿洖鍗犱綅绗?
     switch (msg.localType) {
       case 1:
         return msg.rawContent || null
       case 3:
-        return msg.imageMd5 || '[图片]'
+        return '[图片]'
       case 34:
         return '[语音]'
       case 43:
-        return msg.videoMd5 || '[视频]'
+        return '[视频]'
       case 47:
-        return msg.emojiCdnUrl || msg.emojiMd5 || '[表情]'
+        return '[表情]'
       case 42:
         return msg.cardNickname || '[名片]'
       case 48:
@@ -724,7 +884,7 @@ class HttpService {
   }
 
   /**
-   * 发送 JSON 响应
+   * 鍙戦€?JSON 鍝嶅簲
    */
   private sendJson(res: http.ServerResponse, data: any): void {
     res.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -733,7 +893,7 @@ class HttpService {
   }
 
   /**
-   * 发送错误响应
+   * 鍙戦€侀敊璇搷搴?
    */
   private sendError(res: http.ServerResponse, code: number, message: string): void {
     res.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -743,3 +903,4 @@ class HttpService {
 }
 
 export const httpService = new HttpService()
+

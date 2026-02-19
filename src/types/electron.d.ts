@@ -501,6 +501,11 @@ export interface ElectronAPI {
     onToken: (callback: (token: string) => void) => () => void
     onDownloadProgress: (callback: (payload: { downloaded: number; total: number; speed: number }) => void) => () => void
   }
+  http: {
+    start: (port?: number) => Promise<{ success: boolean; port?: number; error?: string }>
+    stop: () => Promise<{ success: boolean }>
+    status: () => Promise<{ running: boolean; port: number; mediaExportPath: string }>
+  }
 }
 
 export interface ExportOptions {
