@@ -154,6 +154,33 @@ class ExportService {
     return Math.max(1, Math.min(raw, max))
   }
 
+  /**
+   * 为同一会话中的每条消息构建稳定键。
+   * 优先使用 collectMessages 注入的顺序 ID，彻底规避 localId 复用碰撞。
+   */
+  private getMessageCacheBaseKey(msg: any): string {
+    const messageSeq = Number(msg.exportMessageId)
+    if (Number.isFinite(messageSeq) && messageSeq > 0) {
+      return `msg_${Math.floor(messageSeq)}`
+    }
+    return [
+      String(msg.localType ?? ''),
+      String(msg.localId ?? ''),
+      String(msg.createTime ?? ''),
+      String(msg.senderUsername ?? ''),
+      String(msg.imageMd5 || msg.emojiMd5 || msg.videoMd5 || ''),
+      String(msg.content ?? '')
+    ].join('_')
+  }
+
+  private getMessageMediaCacheKey(msg: any): string {
+    return `${this.getMessageCacheBaseKey(msg)}_media`
+  }
+
+  private getMessageVoiceCacheKey(msg: any): string {
+    return `${this.getMessageCacheBaseKey(msg)}_voice`
+  }
+
   private cleanAccountDirName(dirName: string): string {
     const trimmed = dirName.trim()
     if (!trimmed) return trimmed
@@ -1899,6 +1926,7 @@ class ExportService {
           }
 
           rows.push({
+            exportMessageId: rows.length + 1,
             localId,
             createTime,
             localType,
@@ -2372,7 +2400,7 @@ class ExportService {
         const mediaConcurrency = this.getClampedConcurrency(options.exportConcurrency)
         let mediaExported = 0
         await parallelLimit(mediaMessages, mediaConcurrency, async (msg) => {
-          const mediaKey = `${msg.localType}_${msg.localId}`
+          const mediaKey = this.getMessageMediaCacheKey(msg)
           if (!mediaCache.has(mediaKey)) {
             const mediaItem = await this.exportMediaForMessage(msg, sessionId, mediaRootDir, mediaRelativePrefix, {
               exportImages: options.exportImages,
@@ -2399,7 +2427,7 @@ class ExportService {
       }
 
       // ========== 阶段2：并行语音转文字 ==========
-      const voiceTranscriptMap = new Map<number, string>()
+      const voiceTranscriptMap = new Map<string, string>()
 
       if (voiceMessages.length > 0) {
         onProgress?.({
@@ -2417,7 +2445,7 @@ class ExportService {
         let voiceTranscribed = 0
         await parallelLimit(voiceMessages, VOICE_CONCURRENCY, async (msg) => {
           const transcript = await this.transcribeVoice(sessionId, String(msg.localId), msg.createTime, msg.senderUsername)
-          voiceTranscriptMap.set(msg.localId, transcript)
+          voiceTranscriptMap.set(this.getMessageVoiceCacheKey(msg), transcript)
           voiceTranscribed++
           onProgress?.({
             current: 40,
@@ -2456,7 +2484,7 @@ class ExportService {
         let content: string | null
         if (msg.localType === 34 && options.exportVoiceAsText) {
           // 使用预先转写的文字
-          content = voiceTranscriptMap.get(msg.localId) || '[语音消息 - 转文字失败]'
+          content = voiceTranscriptMap.get(this.getMessageVoiceCacheKey(msg)) || '[语音消息 - 转文字失败]'
         } else {
           content = this.parseMessageContent(
             msg.content,
@@ -2743,7 +2771,7 @@ class ExportService {
         const mediaConcurrency = this.getClampedConcurrency(options.exportConcurrency)
         let mediaExported = 0
         await parallelLimit(mediaMessages, mediaConcurrency, async (msg) => {
-          const mediaKey = `${msg.localType}_${msg.localId}`
+          const mediaKey = this.getMessageMediaCacheKey(msg)
           if (!mediaCache.has(mediaKey)) {
             const mediaItem = await this.exportMediaForMessage(msg, sessionId, mediaRootDir, mediaRelativePrefix, {
               exportImages: options.exportImages,
@@ -2770,7 +2798,7 @@ class ExportService {
       }
 
       // ========== 阶段2：并行语音转文字 ==========
-      const voiceTranscriptMap = new Map<number, string>()
+      const voiceTranscriptMap = new Map<string, string>()
 
       if (voiceMessages.length > 0) {
         onProgress?.({
@@ -2787,7 +2815,7 @@ class ExportService {
         let voiceTranscribed = 0
         await parallelLimit(voiceMessages, VOICE_CONCURRENCY, async (msg) => {
           const transcript = await this.transcribeVoice(sessionId, String(msg.localId), msg.createTime, msg.senderUsername)
-          voiceTranscriptMap.set(msg.localId, transcript)
+          voiceTranscriptMap.set(this.getMessageVoiceCacheKey(msg), transcript)
           voiceTranscribed++
           onProgress?.({
             current: 35,
@@ -2828,11 +2856,11 @@ class ExportService {
         const source = sourceMatch ? sourceMatch[0] : ''
 
         let content: string | null
-        const mediaKey = `${msg.localType}_${msg.localId}`
+        const mediaKey = this.getMessageMediaCacheKey(msg)
         const mediaItem = mediaCache.get(mediaKey)
 
         if (msg.localType === 34 && options.exportVoiceAsText) {
-          content = voiceTranscriptMap.get(msg.localId) || '[语音消息 - 转文字失败]'
+          content = voiceTranscriptMap.get(this.getMessageVoiceCacheKey(msg)) || '[语音消息 - 转文字失败]'
         } else if (mediaItem) {
           content = mediaItem.relativePath
         } else {
@@ -3203,7 +3231,7 @@ class ExportService {
         const mediaConcurrency = this.getClampedConcurrency(options.exportConcurrency)
         let mediaExported = 0
         await parallelLimit(mediaMessages, mediaConcurrency, async (msg) => {
-          const mediaKey = `${msg.localType}_${msg.localId}`
+          const mediaKey = this.getMessageMediaCacheKey(msg)
           if (!mediaCache.has(mediaKey)) {
             const mediaItem = await this.exportMediaForMessage(msg, sessionId, mediaRootDir, mediaRelativePrefix, {
               exportImages: options.exportImages,
@@ -3230,7 +3258,7 @@ class ExportService {
       }
 
       // ========== 并行预处理：语音转文字 ==========
-      const voiceTranscriptMap = new Map<number, string>()
+      const voiceTranscriptMap = new Map<string, string>()
 
       if (voiceMessages.length > 0) {
         onProgress?.({
@@ -3247,7 +3275,7 @@ class ExportService {
         let voiceTranscribed = 0
         await parallelLimit(voiceMessages, VOICE_CONCURRENCY, async (msg) => {
           const transcript = await this.transcribeVoice(sessionId, String(msg.localId), msg.createTime, msg.senderUsername)
-          voiceTranscriptMap.set(msg.localId, transcript)
+          voiceTranscriptMap.set(this.getMessageVoiceCacheKey(msg), transcript)
           voiceTranscribed++
           onProgress?.({
             current: 50,
@@ -3327,7 +3355,7 @@ class ExportService {
         const row = worksheet.getRow(currentRow)
         row.height = 24
 
-        const mediaKey = `${msg.localType}_${msg.localId}`
+        const mediaKey = this.getMessageMediaCacheKey(msg)
         const mediaItem = mediaCache.get(mediaKey)
         const shouldUseTranscript = msg.localType === 34 && options.exportVoiceAsText
         const contentValue = shouldUseTranscript
@@ -3335,7 +3363,7 @@ class ExportService {
             msg.content,
             msg.localType,
             options,
-            voiceTranscriptMap.get(msg.localId),
+            voiceTranscriptMap.get(this.getMessageVoiceCacheKey(msg)),
             cleanedMyWxid,
             msg.senderUsername,
             msg.isSend
@@ -3345,7 +3373,7 @@ class ExportService {
               msg.content,
               msg.localType,
               options,
-              voiceTranscriptMap.get(msg.localId),
+              voiceTranscriptMap.get(this.getMessageVoiceCacheKey(msg)),
               cleanedMyWxid,
               msg.senderUsername,
               msg.isSend
@@ -3576,7 +3604,7 @@ class ExportService {
         const mediaConcurrency = this.getClampedConcurrency(options.exportConcurrency)
         let mediaExported = 0
         await parallelLimit(mediaMessages, mediaConcurrency, async (msg) => {
-          const mediaKey = `${msg.localType}_${msg.localId}`
+          const mediaKey = this.getMessageMediaCacheKey(msg)
           if (!mediaCache.has(mediaKey)) {
             const mediaItem = await this.exportMediaForMessage(msg, sessionId, mediaRootDir, mediaRelativePrefix, {
               exportImages: options.exportImages,
@@ -3602,7 +3630,7 @@ class ExportService {
         })
       }
 
-      const voiceTranscriptMap = new Map<number, string>()
+      const voiceTranscriptMap = new Map<string, string>()
 
       if (voiceMessages.length > 0) {
         onProgress?.({
@@ -3619,7 +3647,7 @@ class ExportService {
         let voiceTranscribed = 0
         await parallelLimit(voiceMessages, VOICE_CONCURRENCY, async (msg) => {
           const transcript = await this.transcribeVoice(sessionId, String(msg.localId), msg.createTime, msg.senderUsername)
-          voiceTranscriptMap.set(msg.localId, transcript)
+          voiceTranscriptMap.set(this.getMessageVoiceCacheKey(msg), transcript)
           voiceTranscribed++
           onProgress?.({
             current: 45,
@@ -3644,7 +3672,7 @@ class ExportService {
 
       for (let i = 0; i < sortedMessages.length; i++) {
         const msg = sortedMessages[i]
-        const mediaKey = `${msg.localType}_${msg.localId}`
+        const mediaKey = this.getMessageMediaCacheKey(msg)
         const mediaItem = mediaCache.get(mediaKey)
         const shouldUseTranscript = msg.localType === 34 && options.exportVoiceAsText
         const contentValue = shouldUseTranscript
@@ -3652,7 +3680,7 @@ class ExportService {
             msg.content,
             msg.localType,
             options,
-            voiceTranscriptMap.get(msg.localId),
+            voiceTranscriptMap.get(this.getMessageVoiceCacheKey(msg)),
             cleanedMyWxid,
             msg.senderUsername,
             msg.isSend
@@ -3662,7 +3690,7 @@ class ExportService {
               msg.content,
               msg.localType,
               options,
-              voiceTranscriptMap.get(msg.localId),
+              voiceTranscriptMap.get(this.getMessageVoiceCacheKey(msg)),
               cleanedMyWxid,
               msg.senderUsername,
               msg.isSend
@@ -3853,7 +3881,7 @@ class ExportService {
         const mediaConcurrency = this.getClampedConcurrency(options.exportConcurrency)
         let mediaExported = 0
         await parallelLimit(mediaMessages, mediaConcurrency, async (msg) => {
-          const mediaKey = `${msg.localType}_${msg.localId}`
+          const mediaKey = this.getMessageMediaCacheKey(msg)
           if (!mediaCache.has(mediaKey)) {
             const mediaItem = await this.exportMediaForMessage(msg, sessionId, mediaRootDir, mediaRelativePrefix, {
               exportImages: options.exportImages,
@@ -3879,7 +3907,7 @@ class ExportService {
         })
       }
 
-      const voiceTranscriptMap = new Map<number, string>()
+      const voiceTranscriptMap = new Map<string, string>()
 
       if (voiceMessages.length > 0) {
         onProgress?.({
@@ -3896,7 +3924,7 @@ class ExportService {
         let voiceTranscribed = 0
         await parallelLimit(voiceMessages, VOICE_CONCURRENCY, async (msg) => {
           const transcript = await this.transcribeVoice(sessionId, String(msg.localId), msg.createTime, msg.senderUsername)
-          voiceTranscriptMap.set(msg.localId, transcript)
+          voiceTranscriptMap.set(this.getMessageVoiceCacheKey(msg), transcript)
           voiceTranscribed++
           onProgress?.({
             current: 45,
@@ -3922,7 +3950,7 @@ class ExportService {
 
       for (let i = 0; i < sortedMessages.length; i++) {
         const msg = sortedMessages[i]
-        const mediaKey = `${msg.localType}_${msg.localId}`
+        const mediaKey = this.getMessageMediaCacheKey(msg)
         const mediaItem = mediaCache.get(mediaKey) || null
 
         const typeName = this.getWeCloneTypeName(msg.localType, msg.content || '')
@@ -3955,7 +3983,7 @@ class ExportService {
         }
 
         const msgText = msg.localType === 34 && options.exportVoiceAsText
-          ? (voiceTranscriptMap.get(msg.localId) || '[语音消息 - 转文字失败]')
+          ? (voiceTranscriptMap.get(this.getMessageVoiceCacheKey(msg)) || '[语音消息 - 转文字失败]')
           : (this.parseMessageContent(
             msg.content,
             msg.localType,
@@ -4192,7 +4220,7 @@ class ExportService {
         const MEDIA_CONCURRENCY = 6
         let mediaExported = 0
         await parallelLimit(mediaMessages, MEDIA_CONCURRENCY, async (msg) => {
-          const mediaKey = `${msg.localType}_${msg.localId}`
+          const mediaKey = this.getMessageMediaCacheKey(msg)
           if (!mediaCache.has(mediaKey)) {
             const mediaItem = await this.exportMediaForMessage(msg, sessionId, mediaRootDir, mediaRelativePrefix, {
               exportImages: options.exportImages,
@@ -4223,7 +4251,7 @@ class ExportService {
       const voiceMessages = useVoiceTranscript
         ? sortedMessages.filter(msg => msg.localType === 34)
         : []
-      const voiceTranscriptMap = new Map<number, string>()
+      const voiceTranscriptMap = new Map<string, string>()
 
       if (voiceMessages.length > 0) {
         onProgress?.({
@@ -4240,7 +4268,7 @@ class ExportService {
         let voiceTranscribed = 0
         await parallelLimit(voiceMessages, VOICE_CONCURRENCY, async (msg) => {
           const transcript = await this.transcribeVoice(sessionId, String(msg.localId), msg.createTime, msg.senderUsername)
-          voiceTranscriptMap.set(msg.localId, transcript)
+          voiceTranscriptMap.set(this.getMessageVoiceCacheKey(msg), transcript)
           voiceTranscribed++
           onProgress?.({
             current: 40,
@@ -4349,7 +4377,7 @@ class ExportService {
 
       for (let i = 0; i < sortedMessages.length; i++) {
         const msg = sortedMessages[i]
-        const mediaKey = `${msg.localType}_${msg.localId}`
+        const mediaKey = this.getMessageMediaCacheKey(msg)
         const mediaItem = mediaCache.get(mediaKey) || null
 
         const isSenderMe = msg.isSend
@@ -4373,7 +4401,7 @@ class ExportService {
           msg.isSend
         )
         if (msg.localType === 34 && useVoiceTranscript) {
-          textContent = voiceTranscriptMap.get(msg.localId) || '[语音消息 - 转文字失败]'
+          textContent = voiceTranscriptMap.get(this.getMessageVoiceCacheKey(msg)) || '[语音消息 - 转文字失败]'
         }
         if (mediaItem && (msg.localType === 3 || msg.localType === 47)) {
           textContent = ''
