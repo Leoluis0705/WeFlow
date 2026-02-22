@@ -13,6 +13,7 @@ import { wcdbService } from './wcdbService'
 import { MessageCacheService } from './messageCacheService'
 import { ContactCacheService, ContactCacheEntry } from './contactCacheService'
 import { voiceTranscribeService } from './voiceTranscribeService'
+import { LRUCache } from '../utils/LRUCache.js'
 
 type HardlinkState = {
   db: Database.Database
@@ -114,6 +115,7 @@ class ChatService {
   private configService: ConfigService
   private connected = false
   private messageCursors: Map<string, { cursor: number; fetched: number; batchSize: number; startTime?: number; endTime?: number; ascending?: boolean; bufferedMessages?: any[] }> = new Map()
+  private messageCursorMutex: boolean = false
   private readonly messageBatchDefault = 50
   private avatarCache: Map<string, ContactCacheEntry>
   private readonly avatarCacheTtlMs = 10 * 60 * 1000
@@ -121,8 +123,8 @@ class ChatService {
   private hardlinkCache = new Map<string, HardlinkState>()
   private readonly contactCacheService: ContactCacheService
   private readonly messageCacheService: MessageCacheService
-  private voiceWavCache = new Map<string, Buffer>()
-  private voiceTranscriptCache = new Map<string, string>()
+  private voiceWavCache: LRUCache<string, Buffer>
+  private voiceTranscriptCache: LRUCache<string, string>
   private voiceTranscriptPending = new Map<string, Promise<{ success: boolean; transcript?: string; error?: string }>>()
   private transcriptCacheLoaded = false
   private transcriptCacheDirty = false
@@ -149,6 +151,9 @@ class ChatService {
     const persisted = this.contactCacheService.getAllEntries()
     this.avatarCache = new Map(Object.entries(persisted))
     this.messageCacheService = new MessageCacheService(this.configService.getCacheBasePath())
+    // 初始化LRU缓存，限制大小防止内存泄漏
+    this.voiceWavCache = new LRUCache(this.voiceWavCacheMaxEntries)
+    this.voiceTranscriptCache = new LRUCache(1000) // 最多缓存1000条转写记录
   }
 
   /**
@@ -728,8 +733,15 @@ class ChatService {
       }
 
       const batchSize = Math.max(1, limit || this.messageBatchDefault)
+      
+      // 使用互斥锁保护游标状态访问
+      while (this.messageCursorMutex) {
+        await new Promise(resolve => setTimeout(resolve, 1))
+      }
+      this.messageCursorMutex = true
+      
       let state = this.messageCursors.get(sessionId)
-
+      
       // 只在以下情况重新创建游标:
       // 1. 没有游标状态
       // 2. offset 为 0 (重新加载会话)
@@ -765,7 +777,8 @@ class ChatService {
 
         state = { cursor: cursorResult.cursor, fetched: 0, batchSize, startTime, endTime, ascending }
         this.messageCursors.set(sessionId, state)
-
+        this.messageCursorMutex = false
+        
         // 如果需要跳过消息(offset > 0),逐批获取但不返回
         // 注意：仅在 offset === 0 时重建游标最安全；
         // 当 startTime/endTime 变化导致重建时，offset 应由前端重置为 0
@@ -866,9 +879,12 @@ class ChatService {
       }
 
       state.fetched += rows.length
+      this.messageCursorMutex = false
+      
       this.messageCacheService.set(sessionId, normalized)
       return { success: true, messages: normalized, hasMore }
     } catch (e) {
+      this.messageCursorMutex = false
       console.error('ChatService: 获取消息失败:', e)
       return { success: false, error: String(e) }
     }
@@ -3698,10 +3714,7 @@ class ChatService {
 
   private cacheVoiceWav(cacheKey: string, wavData: Buffer): void {
     this.voiceWavCache.set(cacheKey, wavData)
-    if (this.voiceWavCache.size > this.voiceWavCacheMaxEntries) {
-      const oldestKey = this.voiceWavCache.keys().next().value
-      if (oldestKey) this.voiceWavCache.delete(oldestKey)
-    }
+    // LRU缓存会自动处理大小限制，无需手动清理
   }
 
   /** 获取持久化转写缓存文件路径 */
