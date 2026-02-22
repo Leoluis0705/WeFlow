@@ -195,10 +195,12 @@ function App() {
     if (isNotificationWindow) return // Skip updates in notification window
 
     const removeUpdateListener = window.electronAPI?.app?.onUpdateAvailable?.((info: any) => {
-      // 发现新版本时自动打开更新弹窗
+      // 发现新版本时保存更新信息，锁定状态下不弹窗，解锁后再显示
       if (info) {
         setUpdateInfo({ ...info, hasUpdate: true })
-        setShowUpdateDialog(true)
+        if (!useAppStore.getState().isLocked) {
+          setShowUpdateDialog(true)
+        }
       }
     })
     const removeProgressListener = window.electronAPI?.app?.onDownloadProgress?.((progress: any) => {
@@ -209,6 +211,13 @@ function App() {
       removeProgressListener?.()
     }
   }, [setUpdateInfo, setDownloadProgress, setShowUpdateDialog, isNotificationWindow])
+
+  // 解锁后显示暂存的更新弹窗
+  useEffect(() => {
+    if (!isLocked && updateInfo?.hasUpdate && !showUpdateDialog && !isDownloading) {
+      setShowUpdateDialog(true)
+    }
+  }, [isLocked])
 
   const handleUpdateNow = async () => {
     setShowUpdateDialog(false)

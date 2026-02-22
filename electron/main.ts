@@ -951,6 +951,10 @@ function registerIpcHandlers() {
     return snsService.getTimeline(limit, offset, usernames, keyword, startTime, endTime)
   })
 
+  ipcMain.handle('sns:getSnsUsernames', async () => {
+    return snsService.getSnsUsernames()
+  })
+
   ipcMain.handle('sns:debugResource', async (_, url: string) => {
     return snsService.debugResource(url)
   })

@@ -503,6 +503,7 @@ export interface ElectronAPI {
     }) => Promise<{ success: boolean; filePath?: string; postCount?: number; mediaCount?: number; error?: string }>
     onExportProgress: (callback: (payload: { current: number; total: number; status: string }) => void) => () => void
     selectExportDir: () => Promise<{ canceled: boolean; filePath?: string }>
+    getSnsUsernames: () => Promise<{ success: boolean; usernames?: string[]; error?: string }>
   }
   llama: {
     loadModel: (modelPath: string) => Promise<boolean>
