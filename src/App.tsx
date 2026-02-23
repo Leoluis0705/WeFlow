@@ -22,7 +22,6 @@ import SnsPage from './pages/SnsPage'
 import ContactsPage from './pages/ContactsPage'
 import ChatHistoryPage from './pages/ChatHistoryPage'
 import NotificationWindow from './pages/NotificationWindow'
-import AIChatPage from './pages/AIChatPage'
 
 import { useAppStore } from './stores/appStore'
 import { themes, useThemeStore, type ThemeId, type ThemeMode } from './stores/themeStore'
@@ -195,10 +194,12 @@ function App() {
     if (isNotificationWindow) return // Skip updates in notification window
 
     const removeUpdateListener = window.electronAPI?.app?.onUpdateAvailable?.((info: any) => {
-      // 发现新版本时自动打开更新弹窗
+      // 发现新版本时保存更新信息，锁定状态下不弹窗，解锁后再显示
       if (info) {
         setUpdateInfo({ ...info, hasUpdate: true })
-        setShowUpdateDialog(true)
+        if (!useAppStore.getState().isLocked) {
+          setShowUpdateDialog(true)
+        }
       }
     })
     const removeProgressListener = window.electronAPI?.app?.onDownloadProgress?.((progress: any) => {
@@ -209,6 +210,13 @@ function App() {
       removeProgressListener?.()
     }
   }, [setUpdateInfo, setDownloadProgress, setShowUpdateDialog, isNotificationWindow])
+
+  // 解锁后显示暂存的更新弹窗
+  useEffect(() => {
+    if (!isLocked && updateInfo?.hasUpdate && !showUpdateDialog && !isDownloading) {
+      setShowUpdateDialog(true)
+    }
+  }, [isLocked])
 
   const handleUpdateNow = async () => {
     setShowUpdateDialog(false)
@@ -448,7 +456,7 @@ function App() {
               <Route path="/" element={<HomePage />} />
               <Route path="/home" element={<HomePage />} />
               <Route path="/chat" element={<ChatPage />} />
-              <Route path="/ai-chat" element={<AIChatPage />} />
+
               <Route path="/analytics" element={<AnalyticsWelcomePage />} />
               <Route path="/analytics/view" element={<AnalyticsPage />} />
               <Route path="/group-analytics" element={<GroupAnalyticsPage />} />

@@ -21,7 +21,7 @@ import { videoService } from './services/videoService'
 import { snsService, isVideoUrl } from './services/snsService'
 import { contactExportService } from './services/contactExportService'
 import { windowsHelloService } from './services/windowsHelloService'
-import { llamaService } from './services/llamaService'
+
 import { registerNotificationHandlers, showNotification } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
 
@@ -397,7 +397,7 @@ function createVideoPlayerWindow(videoPath: string, videoWidth?: number, videoHe
 /**
  * 创建独立的图片查看窗口
  */
-function createImageViewerWindow(imagePath: string) {
+function createImageViewerWindow(imagePath: string, liveVideoPath?: string) {
   const isDev = !!process.env.VITE_DEV_SERVER_URL
   const iconPath = isDev
     ? join(__dirname, '../public/icon.ico')
@@ -430,7 +430,8 @@ function createImageViewerWindow(imagePath: string) {
     win.show()
   })
 
-  const imageParam = `imagePath=${encodeURIComponent(imagePath)}`
+  let imageParam = `imagePath=${encodeURIComponent(imagePath)}`
+  if (liveVideoPath) imageParam += `&liveVideoPath=${encodeURIComponent(liveVideoPath)}`
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(`${process.env.VITE_DEV_SERVER_URL}#/image-viewer-window?${imageParam}`)
@@ -825,63 +826,6 @@ function registerIpcHandlers() {
     return await chatService.getContact(username)
   })
 
-  // Llama AI
-  ipcMain.handle('llama:init', async () => {
-    return await llamaService.init()
-  })
-
-  ipcMain.handle('llama:loadModel', async (_, modelPath: string) => {
-    return llamaService.loadModel(modelPath)
-  })
-
-  ipcMain.handle('llama:createSession', async (_, systemPrompt?: string) => {
-    return llamaService.createSession(systemPrompt)
-  })
-
-  ipcMain.handle('llama:chat', async (event, message: string, options?: { thinking?: boolean }) => {
-    // We use a callback to stream back to the renderer
-    const webContents = event.sender
-    try {
-      if (!webContents) return { success: false, error: 'No sender' }
-
-      const response = await llamaService.chat(message, options, (token) => {
-        if (!webContents.isDestroyed()) {
-          webContents.send('llama:token', token)
-        }
-      })
-      return { success: true, response }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('llama:downloadModel', async (event, url: string, savePath: string) => {
-    const webContents = event.sender
-    try {
-      await llamaService.downloadModel(url, savePath, (payload) => {
-        if (!webContents.isDestroyed()) {
-          webContents.send('llama:downloadProgress', payload)
-        }
-      })
-      return { success: true }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('llama:getModelsPath', async () => {
-    return llamaService.getModelsPath()
-  })
-
-  ipcMain.handle('llama:checkFileExists', async (_, filePath: string) => {
-    const { existsSync } = await import('fs')
-    return existsSync(filePath)
-  })
-
-  ipcMain.handle('llama:getModelStatus', async (_, modelPath: string) => {
-    return llamaService.getModelStatus(modelPath)
-  })
-
 
   ipcMain.handle('chat:getContactAvatar', async (_, username: string) => {
     return await chatService.getContactAvatar(username)
@@ -949,6 +893,10 @@ function registerIpcHandlers() {
 
   ipcMain.handle('sns:getTimeline', async (_, limit: number, offset: number, usernames?: string[], keyword?: string, startTime?: number, endTime?: number) => {
     return snsService.getTimeline(limit, offset, usernames, keyword, startTime, endTime)
+  })
+
+  ipcMain.handle('sns:getSnsUsernames', async () => {
+    return snsService.getSnsUsernames()
   })
 
   ipcMain.handle('sns:debugResource', async (_, url: string) => {
@@ -1172,8 +1120,18 @@ function registerIpcHandlers() {
   })
 
   // 打开图片查看窗口
-  ipcMain.handle('window:openImageViewerWindow', (_, imagePath: string) => {
-    createImageViewerWindow(imagePath)
+  ipcMain.handle('window:openImageViewerWindow', async (_, imagePath: string, liveVideoPath?: string) => {
+    // 如果是 dataUrl，写入临时文件
+    if (imagePath.startsWith('data:')) {
+      const commaIdx = imagePath.indexOf(',')
+      const meta = imagePath.slice(5, commaIdx) // e.g. "image/jpeg;base64"
+      const ext = meta.split('/')[1]?.split(';')[0] || 'jpg'
+      const tmpPath = join(app.getPath('temp'), `weflow_preview_${Date.now()}.${ext}`)
+      await writeFile(tmpPath, Buffer.from(imagePath.slice(commaIdx + 1), 'base64'))
+      createImageViewerWindow(`file://${tmpPath.replace(/\\/g, '/')}`, liveVideoPath)
+    } else {
+      createImageViewerWindow(imagePath, liveVideoPath)
+    }
   })
 
   // 完成引导，关闭引导窗口并显示主窗口
