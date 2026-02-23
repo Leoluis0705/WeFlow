@@ -529,6 +529,9 @@ export interface ExportOptions {
   sessionLayout?: 'shared' | 'per-session'
   displayNamePreference?: 'group-nickname' | 'remark' | 'nickname'
   exportConcurrency?: number
+  includeMergedForwarded?: boolean
+  mergedForwardedMaxDepth?: number
+  tryDecryptMergedForwardedMedia?: boolean
 }
 
 export interface ExportProgress {

@@ -27,6 +27,9 @@ interface ExportOptions {
   txtColumns: string[]
   displayNamePreference: 'group-nickname' | 'remark' | 'nickname'
   exportConcurrency: number
+  includeMergedForwarded: boolean
+  mergedForwardedMaxDepth: number
+  tryDecryptMergedForwardedMedia: boolean
 }
 
 interface ExportResult {
@@ -98,7 +101,10 @@ function ExportPage() {
     excelCompactColumns: true,
     txtColumns: defaultTxtColumns,
     displayNamePreference: 'remark',
-    exportConcurrency: 2
+    exportConcurrency: 2,
+    includeMergedForwarded: false,
+    mergedForwardedMaxDepth: 2,
+    tryDecryptMergedForwardedMedia: false
   })
 
   const buildDateRangeFromPreset = (preset: string) => {
@@ -354,6 +360,9 @@ function ExportPage() {
         txtColumns: options.txtColumns,
         displayNamePreference: options.displayNamePreference,
         exportConcurrency: options.exportConcurrency,
+        includeMergedForwarded: options.includeMergedForwarded,
+        mergedForwardedMaxDepth: options.mergedForwardedMaxDepth,
+        tryDecryptMergedForwardedMedia: options.tryDecryptMergedForwardedMedia,
         sessionLayout,
         dateRange: options.useAllTime ? null : options.dateRange ? {
           start: Math.floor(options.dateRange.start.getTime() / 1000),
@@ -705,6 +714,61 @@ function ExportPage() {
                       </button>
                     ))}
                   </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {(options.format === 'excel' || options.format === 'txt' || options.format === 'json') && (
+            <div className="setting-section">
+              <h3>合并转发聊天记录</h3>
+              <p className="setting-subtitle">导出时可将转发记录内的文本/图片/语音/视频摘要展开为文本（支持多层嵌套）</p>
+              <div className="media-options-card">
+                <label className="media-checkbox-row">
+                  <div className="media-checkbox-info">
+                    <span className="media-checkbox-title">展开合并转发聊天记录</span>
+                    <span className="media-checkbox-desc">在消息内容中追加转发记录摘要（优先可读文本 + 媒体引用信息），尽量降低嵌套格式差异带来的信息缺失</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={options.includeMergedForwarded}
+                    onChange={e => setOptions({ ...options, includeMergedForwarded: e.target.checked })}
+                  />
+                </label>
+
+                {options.includeMergedForwarded && (
+                  <>
+                    <div className="media-option-divider"></div>
+                    <label className="media-checkbox-row">
+                      <div className="media-checkbox-info">
+                        <span className="media-checkbox-title">展开层数</span>
+                        <span className="media-checkbox-desc">可选 1-5 层，默认 2 层；层数越高内容越长。若遇格式不一致会自动降级提取可读文本</span>
+                      </div>
+                      <select
+                        value={options.mergedForwardedMaxDepth}
+                        onChange={e => setOptions({ ...options, mergedForwardedMaxDepth: Number(e.target.value) })}
+                      >
+                        <option value={1}>1 层</option>
+                        <option value={2}>2 层（默认）</option>
+                        <option value={3}>3 层</option>
+                        <option value={4}>4 层</option>
+                        <option value={5}>5 层</option>
+                      </select>
+                    </label>
+
+                    <div className="media-option-divider"></div>
+                    <label className="media-checkbox-row">
+                      <div className="media-checkbox-info">
+                        <span className="media-checkbox-title">尝试解密嵌套媒体（实验性）</span>
+                        <span className="media-checkbox-desc">会对嵌套图片/视频先走一轮解密尝试（最多 20 条），成功则写入导出结果</span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={options.tryDecryptMergedForwardedMedia}
+                        onChange={e => setOptions({ ...options, tryDecryptMergedForwardedMedia: e.target.checked })}
+                      />
+                    </label>
+                  </>
                 )}
               </div>
             </div>

@@ -11,6 +11,7 @@ import { imageDecryptService } from './imageDecryptService'
 import { chatService } from './chatService'
 import { videoService } from './videoService'
 import { voiceTranscribeService } from './voiceTranscribeService'
+import { snsService } from './snsService'
 import { EXPORT_HTML_STYLES } from './exportHtmlStyles'
 
 // ChatLab 格式类型定义
@@ -67,6 +68,9 @@ const MESSAGE_TYPE_MAP: Record<number, number> = {
   10000: 80, // 系统消息 -> SYSTEM
 }
 
+const MERGED_FORWARDED_PREVIEW_MAX_ITEMS = 300
+const FORWARDED_MEDIA_REFERENCE_NOTE = '（嵌套媒体优先导出可读文本与引用信息，解密能力受转发格式限制）'
+
 export interface ExportOptions {
   format: 'chatlab' | 'chatlab-jsonl' | 'json' | 'html' | 'txt' | 'excel' | 'weclone' | 'sql'
   dateRange?: { start: number; end: number } | null
@@ -84,6 +88,9 @@ export interface ExportOptions {
   sessionLayout?: 'shared' | 'per-session'
   displayNamePreference?: 'group-nickname' | 'remark' | 'nickname'
   exportConcurrency?: number
+  includeMergedForwarded?: boolean
+  mergedForwardedMaxDepth?: number
+  tryDecryptMergedForwardedMedia?: boolean
 }
 
 const TXT_COLUMN_DEFINITIONS: Array<{ id: string; label: string }> = [
@@ -763,7 +770,7 @@ class ExportService {
   private formatPlainExportContent(
     content: string,
     localType: number,
-    options: { exportVoiceAsText?: boolean },
+    options: { exportVoiceAsText?: boolean; includeMergedForwarded?: boolean; mergedForwardedMaxDepth?: number },
     voiceTranscript?: string,
     myWxid?: string,
     senderWxid?: string,
@@ -868,7 +875,21 @@ class ExportService {
           this.extractXmlValue(normalized, 'title') ||
           this.extractXmlValue(normalized, 'des') ||
           this.extractXmlValue(normalized, 'displayname')
-        return forwardName ? `[转发的聊天记录]${forwardName}` : '[转发的聊天记录]'
+        const baseTitle = (forwardName ? `[转发的聊天记录]${forwardName}` : '[转发的聊天记录]') + FORWARDED_MEDIA_REFERENCE_NOTE
+
+        if (options.includeMergedForwarded === true) {
+          const maxDepth = this.getMergedForwardedMaxDepth(options.mergedForwardedMaxDepth)
+          const records = this.parseChatHistory(normalized, 1, maxDepth)
+          if (records && records.length > 0) {
+            const preview = this.formatForwardedRecordPreview(records, maxDepth)
+            if (preview) {
+              return `${baseTitle}
+${preview}`
+            }
+          }
+        }
+
+        return baseTitle
       }
       if (subType === 33 || subType === 36) {
         const appName = this.extractXmlValue(normalized, 'appname') || title || '小程序'
@@ -1236,7 +1257,7 @@ class ExportService {
   /**
    * 解析合并转发的聊天记录 (Type 19)
    */
-  private parseChatHistory(content: string): any[] | undefined {
+  private parseChatHistory(content: string, currentDepth = 1, maxDepth = 5): any[] | undefined {
     try {
       const type = this.extractXmlValue(content, 'type')
       if (type !== '19') return undefined
@@ -1251,37 +1272,280 @@ class ExportService {
       let itemMatch
 
       while ((itemMatch = itemRegex.exec(innerXml)) !== null) {
-        const attrs = itemMatch[1]
-        const body = itemMatch[2]
+        const parsed = this.parseForwardedDataItemBlock(itemMatch[1], itemMatch[2])
+        items.push(parsed)
 
-        const datatypeMatch = /datatype="(\d+)"/.exec(attrs)
-        const datatype = datatypeMatch ? parseInt(datatypeMatch[1]) : 0
-
-        const sourcename = this.extractXmlValue(body, 'sourcename')
-        const sourcetime = this.extractXmlValue(body, 'sourcetime')
-        const sourceheadurl = this.extractXmlValue(body, 'sourceheadurl')
-        const datadesc = this.extractXmlValue(body, 'datadesc')
-        const datatitle = this.extractXmlValue(body, 'datatitle')
-        const fileext = this.extractXmlValue(body, 'fileext')
-        const datasize = parseInt(this.extractXmlValue(body, 'datasize') || '0')
-
-        items.push({
-          datatype,
-          sourcename,
-          sourcetime,
-          sourceheadurl,
-          datadesc: this.decodeHtmlEntities(datadesc),
-          datatitle: this.decodeHtmlEntities(datatitle),
-          fileext,
-          datasize
-        })
+        if (currentDepth < maxDepth) {
+          const nestedXml = this.extractNestedForwardedXml(itemMatch[2], parsed.datadesc || '', parsed.datatitle || '')
+          if (nestedXml) {
+            const nestedRecords = this.parseChatHistory(nestedXml, currentDepth + 1, maxDepth)
+            if (nestedRecords && nestedRecords.length > 0) {
+              items[items.length - 1].nestedRecords = nestedRecords
+            }
+          }
+        }
       }
 
-      return items.length > 0 ? items : undefined
+      if (items.length > 0) {
+        return items
+      }
+
+      return this.parseChatHistoryLoose(innerXml)
     } catch (e) {
       console.error('ExportService: 解析聊天记录失败:', e)
       return undefined
     }
+  }
+
+  private parseForwardedDataItemBlock(attrs: string, body: string): any {
+    const datatypeMatch = /datatype="(\d+)"/.exec(attrs)
+    const datatype = datatypeMatch ? parseInt(datatypeMatch[1], 10) : 0
+
+    const sourcename = this.extractXmlValue(body, 'sourcename')
+    const sourcetime = this.extractXmlValue(body, 'sourcetime')
+    const sourceheadurl = this.extractXmlValue(body, 'sourceheadurl')
+    const datadesc = this.extractXmlValue(body, 'datadesc')
+    const datatitle = this.extractXmlValue(body, 'datatitle')
+    const fileext = this.extractXmlValue(body, 'fileext')
+    const datasize = parseInt(this.extractXmlValue(body, 'datasize') || '0', 10)
+    const dataurl = this.extractXmlValue(body, 'dataurl')
+    const datathumburl = this.extractXmlValue(body, 'datathumburl') || this.extractXmlValue(body, 'thumburl')
+    const datacdnurl = this.extractXmlValue(body, 'datacdnurl') || this.extractXmlValue(body, 'cdnurl')
+    const aeskey = this.extractXmlValue(body, 'aeskey') || this.extractXmlValue(body, 'qaeskey')
+    const md5 = this.extractXmlValue(body, 'md5') || this.extractXmlValue(body, 'datamd5')
+    const duration = parseInt(this.extractXmlValue(body, 'duration') || this.extractXmlValue(body, 'playlength') || '0', 10)
+
+    return {
+      datatype,
+      sourcename,
+      sourcetime,
+      sourceheadurl,
+      datadesc: this.decodeHtmlEntities(datadesc),
+      datatitle: this.decodeHtmlEntities(datatitle),
+      fileext,
+      datasize,
+      dataurl: this.decodeHtmlEntities(dataurl),
+      datathumburl: this.decodeHtmlEntities(datathumburl),
+      datacdnurl: this.decodeHtmlEntities(datacdnurl),
+      aeskey: this.decodeHtmlEntities(aeskey),
+      md5,
+      duration
+    }
+  }
+
+  private parseChatHistoryLoose(innerXml: string): any[] | undefined {
+    if (!innerXml) return undefined
+
+    const normalized = this.decodeHtmlEntities(innerXml)
+    const roughText = normalized
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (!roughText) return undefined
+
+    const preview = roughText.length > 240 ? `${roughText.slice(0, 240)}...` : roughText
+    return [{
+      datatype: -1,
+      sourcename: 'unknown',
+      sourcetime: '',
+      datadesc: preview,
+      datatitle: '',
+      parseFallback: true,
+      rawFragment: normalized.slice(0, 800)
+    }]
+  }
+
+  private extractNestedForwardedXml(bodyXml: string, decodedDatadesc: string, decodedDatatitle: string): string | null {
+    const xmlLikeValues = [
+      this.extractXmlValue(bodyXml, 'recordxml'),
+      this.extractXmlValue(bodyXml, 'dataitemsource'),
+      this.extractXmlValue(bodyXml, 'sourcerecordxml'),
+      decodedDatadesc,
+      decodedDatatitle
+    ].map(v => this.decodeHtmlEntities(v || '').trim()).filter(Boolean)
+
+    for (const value of xmlLikeValues) {
+      if (value.includes('<recorditem') || value.includes('<appmsg')) {
+        return value
+      }
+    }
+
+    return null
+  }
+
+  private formatForwardedRecordPreview(
+    records: any[],
+    maxDepth: number,
+    depth = 1,
+    state: { count: number; truncated: boolean } = { count: 0, truncated: false }
+  ): string {
+    if (!records || records.length === 0 || depth > maxDepth || state.truncated) return ''
+
+    const lines: string[] = []
+    for (const record of records) {
+      if (state.count >= MERGED_FORWARDED_PREVIEW_MAX_ITEMS) {
+        state.truncated = true
+        break
+      }
+
+      state.count += 1
+      const sender = record.sourcename || '未知发送者'
+      const time = record.sourcetime || ''
+      const content = this.formatForwardedRecordContent(record)
+      const indent = '  '.repeat(depth - 1)
+      lines.push(`${indent}↳ ${sender}${time ? ` [${time}]` : ''}：${content}`)
+
+      if (depth < maxDepth && Array.isArray(record.nestedRecords) && record.nestedRecords.length > 0) {
+        const nested = this.formatForwardedRecordPreview(record.nestedRecords, maxDepth, depth + 1, state)
+        if (nested) lines.push(nested)
+      }
+
+      if (state.truncated) break
+    }
+
+    if (depth === 1 && state.truncated) {
+      lines.push(`... 已截断，仅展示前 ${MERGED_FORWARDED_PREVIEW_MAX_ITEMS} 条嵌套消息，避免导出内容过大`) 
+    }
+
+    return lines.join('\n')
+  }
+
+  private formatForwardedRecordContent(record: any): string {
+    const datatype = Number(record.datatype || 0)
+    const mediaUrl = this.formatForwardedMediaRef(record.datathumburl || record.datacdnurl || record.dataurl || '')
+    switch (datatype) {
+      case 1:
+        return record.datadesc || '[文本]'
+      case 3:
+        return mediaUrl ? `[图片] ${mediaUrl}` : '[图片]'
+      case 34: {
+        const sec = this.parseDurationSeconds(String(record.duration || '0'))
+        return sec ? `[语音 ${sec}s]` : '[语音]'
+      }
+      case 43: {
+        const sec = this.parseDurationSeconds(String(record.duration || '0'))
+        const base = sec ? `[视频 ${sec}s]` : '[视频]'
+        return mediaUrl ? `${base} ${mediaUrl}` : base
+      }
+      case 47:
+        return '[动画表情]'
+      case 48:
+        return record.datadesc ? `[位置] ${record.datadesc}` : '[位置]'
+      case 8:
+      case 49: {
+        const name = record.datatitle || ''
+        const size = this.formatFileSize(record.datasize)
+        return name
+          ? `[文件] ${name}${size ? ` (${size})` : ''}`
+          : '[文件]'
+      }
+      default:
+        if (record.parseFallback) {
+          return record.datadesc ? `[嵌套格式不一致，已提取可读文本] ${record.datadesc}` : '[嵌套格式不一致]'
+        }
+        return record.datadesc || record.datatitle || '[消息]'
+    }
+  }
+
+  private formatForwardedMediaRef(url: string): string {
+    if (!url) return ''
+    const text = String(url).trim()
+    if (text.length <= 120) return text
+    return `${text.slice(0, 117)}...`
+  }
+
+  private formatFileSize(size: unknown): string {
+    const value = Number(size)
+    if (!Number.isFinite(value) || value <= 0) return ''
+    if (value < 1024) return `${value}B`
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)}KB`
+    if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)}MB`
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1)}GB`
+  }
+
+  private flattenForwardedRecords(records: any[], out: any[] = []): any[] {
+    for (const record of records || []) {
+      out.push(record)
+      if (Array.isArray(record.nestedRecords) && record.nestedRecords.length > 0) {
+        this.flattenForwardedRecords(record.nestedRecords, out)
+      }
+    }
+    return out
+  }
+
+  private async buildForwardedDecryptAttemptNote(
+    content: string,
+    options: ExportOptions,
+    mediaRootDir: string,
+    mediaRelativePrefix: string
+  ): Promise<string> {
+    if (!options.tryDecryptMergedForwardedMedia) return ''
+    const records = this.parseChatHistory(content, 1, this.getMergedForwardedMaxDepth(options.mergedForwardedMaxDepth))
+    if (!records || records.length === 0) return ''
+
+    const flat = this.flattenForwardedRecords(records)
+    const candidates = flat.filter(r => {
+      const t = Number(r.datatype || 0)
+      return (t === 3 || t === 43) && (r.datacdnurl || r.datathumburl || r.dataurl)
+    }).slice(0, 20)
+
+    if (candidates.length === 0) return ''
+
+    let success = 0
+    let failed = 0
+    const failureReasonMap = new Map<string, number>()
+    const lines: string[] = []
+    const outDir = path.join(mediaRootDir, mediaRelativePrefix, 'merged-forwarded')
+    if (options.exportMedia && !fs.existsSync(outDir)) {
+      fs.mkdirSync(outDir, { recursive: true })
+    }
+
+    for (let i = 0; i < candidates.length; i++) {
+      const item = candidates[i]
+      const url = item.datacdnurl || item.datathumburl || item.dataurl
+      const key = item.aeskey || undefined
+      try {
+        const result = await snsService.downloadImage(url, key)
+        if (result.success && result.data) {
+          success++
+          if (options.exportMedia) {
+            const ext = (result.contentType || '').includes('video') ? '.mp4' : '.jpg'
+            const fileName = `nested_${Date.now()}_${i}${ext}`
+            const filePath = path.join(outDir, fileName)
+            fs.writeFileSync(filePath, result.data)
+            lines.push(`↳ [嵌套媒体解密尝试成功] ${path.posix.join(mediaRelativePrefix, 'merged-forwarded', fileName)}`)
+          } else {
+            lines.push('↳ [嵌套媒体解密尝试成功]（未导出文件，仅验证可解）')
+          }
+        } else {
+          failed++
+          const reason = (result.error || 'unknown').slice(0, 80)
+          failureReasonMap.set(reason, (failureReasonMap.get(reason) || 0) + 1)
+        }
+      } catch (e) {
+        failed++
+        const reason = String(e || 'exception').slice(0, 80)
+        failureReasonMap.set(reason, (failureReasonMap.get(reason) || 0) + 1)
+      }
+    }
+
+    const topReasons = Array.from(failureReasonMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([reason, count]) => `${reason} x${count}`)
+    const reasonText = topReasons.length > 0 ? `；主要失败原因：${topReasons.join('，')}` : ''
+
+    return `
+[嵌套媒体解密尝试] 成功 ${success} 条，失败 ${failed} 条（最多尝试 20 条）${reasonText}${lines.length ? `
+${lines.join('\n')}` : ''}`
+  }
+
+  private getMergedForwardedMaxDepth(value: unknown): number {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return 2
+    return Math.max(1, Math.min(5, Math.floor(parsed)))
   }
 
   /**
@@ -3399,8 +3663,11 @@ class ExportService {
           }
         }
 
-        // 调试日志
-        if (msg.localType === 3 || msg.localType === 47) {
+        if (options.tryDecryptMergedForwardedMedia && msg.localType === 49 && msg.content && msg.content.includes('<recorditem')) {
+          const attemptNote = await this.buildForwardedDecryptAttemptNote(msg.content, options, mediaRootDir, mediaRelativePrefix)
+          if (attemptNote) {
+            enrichedContentValue = `${enrichedContentValue}${attemptNote}`
+          }
         }
 
         worksheet.getCell(currentRow, 1).value = i + 1
@@ -3713,6 +3980,13 @@ class ExportService {
           )
           if (transferDesc) {
             enrichedContentValue = this.appendTransferDesc(contentValue, transferDesc)
+          }
+        }
+
+        if (options.tryDecryptMergedForwardedMedia && msg.localType === 49 && msg.content && msg.content.includes('<recorditem')) {
+          const attemptNote = await this.buildForwardedDecryptAttemptNote(msg.content, options, mediaRootDir, mediaRelativePrefix)
+          if (attemptNote) {
+            enrichedContentValue = `${enrichedContentValue}${attemptNote}`
           }
         }
 
