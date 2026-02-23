@@ -884,16 +884,28 @@ class ChatService {
           // 群聊消息暂不验证（因为 senderUsername 是群成员，不是 sessionId）
           return true
         } else {
-          // 单聊消息：senderUsername 应该是 sessionId（对方）或为空/null（自己）
+          // 单聊消息验证逻辑
+          // 添加调试日志
+          const debugInfo = `localId=${msg.localId}, isSend=${msg.isSend}, sender=${msg.senderUsername}`
+          
+          // 情况1：自己发的消息（isSend === 1），senderUsername 应该是空或自己的 wxid
+          if (msg.isSend === 1) {
+            // 严格验证：如果有 senderUsername，它不应该是其他人的 wxid
+            if (msg.senderUsername && msg.senderUsername !== sessionId) {
+              // 可能是自己发给自己，或者是自己的消息但 senderUsername 错误
+              console.warn(`[ChatService] 可疑的发送消息: sessionId=${sessionId}, ${debugInfo}`)
+              // 暂时允许通过，但记录日志
+            }
+            return true
+          }
+          
+          // 情况2：对方发的消息（isSend !== 1），senderUsername 应该是 sessionId
           if (!msg.senderUsername || msg.senderUsername === sessionId) {
             return true
           }
-          // 如果 isSend 为 1，说明是自己发的，允许通过
-          if (msg.isSend === 1) {
-            return true
-          }
-          // 其他情况：可能是错误的消息
-          console.warn(`[ChatService] 检测到异常消息: sessionId=${sessionId}, senderUsername=${msg.senderUsername}, localId=${msg.localId}`)
+          
+          // 情况3：其他情况 - 异常消息
+          console.warn(`[ChatService] ⚠️ 检测到异常消息并过滤: sessionId=${sessionId}, ${debugInfo}`)
           return false
         }
       })
